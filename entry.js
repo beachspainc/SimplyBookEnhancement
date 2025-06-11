@@ -1,0 +1,8 @@
+class Application {
+    constructor() {
+    }
+
+    run() {
+
+    }
+}

@@ -24,28 +24,112 @@
         API_BASE_URL: 'https://user-api-v2.simplybook.me'
     };
 
-    function getConstructorParamNames(targetClass) {
-        const constructorStr = targetClass.prototype.constructor.toString();
-        const regex = /constructor\s*\(([^)]*)\)/;
-        const match = constructorStr.match(regex);
-
-        if (!match) return [];
-
-        return match[1]
+    /**
+     * 获取构造函数参数信息
+     * @param {Function} targetClass - 目标类
+     * @returns {Object} { paramNames: Array<string>, paramTypes: { [name]: string } }
+     */
+    function getConstructorParamsInfo(targetClass) {
+        const constructorStr = targetClass.toString();
+        const paramNames = constructorStr
+            .match(/constructor\s*\(([^)]*)\)/)[1]
             .split(',')
-            .map(param => param.trim())
-            .filter(param => param); // 过滤空字符串
+            .map(param => param.trim().replace(/\/\*[^*]*\*\//g, '').split('=')[0].trim())
+            .filter(name => name);
+        const paramTypes = {};
+        const jsdocMatch = constructorStr.match(/\/\*\*([\s\S]*?)\*\/\s*constructor\(/);
+        if (jsdocMatch) {
+            const lines = jsdocMatch[1].split('\n');
+            lines.forEach(line => {
+                const paramMatch = line.match(/@param\s+{([^}]+)}\s+(\w+)/);
+                if (paramMatch) {
+                    const [, type, name] = paramMatch;
+                    paramTypes[name] = type;
+                }
+            });
+        }
+        return { paramNames, paramTypes };
     }
 
+    /**
+     * 解析 JSDoc 类型字符串
+     * @param {string} typeStr - JSDoc 类型字符串
+     * @returns {Array} [基本类型, 是否为数组]
+     */
+    function parseJsdocType(typeStr) {
+        const isArray = typeStr.includes('[]') || /^array\|/i.test(typeStr);
+        const baseType = typeStr
+            .replace(/\[\]$/g, '')
+            .replace(/^array\|/i, '')
+            .split('|')[0]
+            .trim();
+
+        return [baseType, isArray];
+    }
+    /**
+     * 根据类型注解转换值
+     * @param {*} value - 输入值
+     * @param {string} typeStr - JSDoc 类型字符串
+     * @returns {*} 转换后的值
+     */
+    function convertByJsdocType(value, typeStr) {
+        if (value === null || value === undefined) return value;
+        const [baseType, isArray] = parseJsdocType(typeStr);
+        if (isArray && Array.isArray(value))  return value.map(item => convertByJsdocType(item, baseType));
+        switch (baseType.toLowerCase()) {
+            case 'number':
+            case 'int':
+            case 'integer':
+            case 'float':
+            case 'double':
+                return Number(value);
+            case 'boolean':
+            case 'bool':
+                return Boolean(value);
+            case 'string':
+            case 'str':
+                return String(value);
+            case 'null':
+            case 'undefined':
+            case 'any':
+            case 'Array':
+                return value;
+            default:
+                try {
+                    const type = eval(baseType);
+                    if (typeof type === 'function') {
+                        return new type(...valuesOf(value, type));
+                    }
+                } catch (e) {
+                    return value;
+                }
+
+        }
+    }
+
+    /**
+     * 从数据中提取并转换目标类需要的值
+     * @param {Object|Array} entries - 输入数据
+     * @param {Function} targetClass - 目标类构造函数
+     * @returns {Array} 构造函数参数数组
+     */
     function valuesOf(entries, targetClass) {
-        const params = getConstructorParamNames(targetClass);
-        const keys = new Map(params.map((name, index) => [name, index]));
-        const size = params.length;
-        return [...entries].sort((x, y) => {
-            const p = keys.has(x.key) ? keys.get(x.key) : Infinity;
-            const q = keys.has(y.key) ? keys.get(y.key) : Infinity;
-            return p - q;
-        }).slice(0, size).to
+        const { paramNames, paramTypes } = getConstructorParamsInfo(targetClass);
+        const result = new Array(paramNames.length);
+        const entriesIter = Array.isArray(entries) ? entries : Object.entries(entries);
+
+        for (const entry of entriesIter) {
+            let key, value;
+            if (Array.isArray(entry)) [key, value] = entry;
+            else if (entry && typeof entry === 'object')  ({key, value} = entry);
+            else continue;
+            if (paramNames.includes(key)) {
+                const index = paramNames.indexOf(key);
+                const type = paramTypes[key];
+                result[index] = type ? convertByJsdocType(value, type) : value;
+            }
+        }
+        return result;
     }
 
     // Error class for API exceptions
@@ -155,8 +239,19 @@
          */
         async getInvoice(id) {
             const data = await this.request(`/admin/invoices/${id}`, "GET");
-            console.log("@@@@@", data);
             return new AdminInvoiceEntity(...valuesOf(data, AdminInvoiceEntity));
+        }
+
+        /**
+         * Get booking details by id
+         * @param {number} id - book id
+         * @returns {Promise<AdminBookingDetailsEntity>} Booking details
+         * @throws {APIError} AccessDenied, NotFound
+         */
+        async getBookingDetails(id) {
+            const data = await this.request(`/admin/bookings/${id}`, "GET");
+            console.log(data);
+            return new AdminBookingDetailsEntity(...valuesOf(data, AdminBookingDetailsEntity));
         }
 
     }
@@ -270,39 +365,159 @@
             this.auth_session_id = auth_session_id;
         }
     }
+
+    class AdminClientEntity {
+        /**
+         * @param {number} id - User ID. Auto-generated value.
+         * @param {string} name - Full name of the user
+         * @param {string} email - User's email address
+         * @param {string|null} phone - User's phone number (E.164 format)
+         * @param {string|null} address1 - Primary address line
+         * @param {string|null} address2 - Secondary address line
+         * @param {string|null} city - City name
+         * @param {string|null} state_id - State/Province identifier
+         * @param {string|null} zip - Postal/ZIP code
+         * @param {number|null} country_id - Country identifier
+         * @param {string} full_address - Precomputed full address string
+         * @param {boolean} can_be_edited - Flag indicating if user can be modified
+         * @param {boolean} is_deleted - Soft deletion status
+         * @param {boolean} email_promo_subscribed - Email marketing consent
+         * @param {boolean} sms_promo_subscribed - SMS marketing consent
+         */
+        constructor(
+            id,
+            name,
+            email,
+            phone,
+            address1,
+            address2,
+            city,
+            state_id,
+            zip,
+            country_id,
+            full_address,
+            can_be_edited,
+            is_deleted,
+            email_promo_subscribed,
+            sms_promo_subscribed
+        ) {
+            this.id = id;
+            this.name = name;
+            this.email = email;
+            this.phone = phone;
+            this.address1 = address1;
+            this.address2 = address2;
+            this.city = city;
+            this.state_id = state_id;
+            this.zip = zip;
+            this.country_id = country_id;
+            this.full_address = full_address;
+            this.can_be_edited = can_be_edited;
+            this.is_deleted = is_deleted;
+            this.email_promo_subscribed = email_promo_subscribed;
+            this.sms_promo_subscribed = sms_promo_subscribed;
+        }
+
+        /**
+         * Check if the user is active (not deleted)
+         * @returns {boolean}
+         */
+        isActive() {
+            return !this.is_deleted;
+        }
+
+        /**
+         * Check if user has complete address information
+         * @returns {boolean}
+         */
+        hasCompleteAddress() {
+            return !!(
+                this.address1 &&
+                this.city &&
+                this.state_id &&
+                this.zip &&
+                this.country_id
+            );
+        }
+
+        /**
+         * Get formatted address (combines available address components)
+         * @returns {string}
+         */
+        getFormattedAddress() {
+            if (this.full_address) return this.full_address;
+
+            const parts = [
+                this.address1,
+                this.address2,
+                this.city,
+                this.state_id,
+                this.zip
+            ].filter(Boolean); // Remove empty parts
+
+            return parts.join(', ') || 'No address available';
+        }
+
+        /**
+         * Check if user is subscribed to any marketing
+         * @returns {boolean}
+         */
+        isSubscribedToMarketing() {
+            return this.email_promo_subscribed || this.sms_promo_subscribed;
+        }
+
+        /**
+         * Check if user can be edited
+         * @returns {boolean}
+         */
+        isEditable() {
+            return this.can_be_edited && !this.is_deleted;
+        }
+
+        /**
+         * Get masked email for display
+         * @returns {string}
+         */
+        getMaskedEmail() {
+            if (!this.email) return '';
+            const [name, domain] = this.email.split('@');
+            return `${name[0]}****@${domain}`;
+        }
+    }
+
     class AdminInvoiceEntity {
         /**
          * @param {number} id - Invoice id. Auto-generated value.
          * @param {string} number - Invoice number. Auto-generated value.
          * @param {string} datetime - Invoice datetime. Readonly
-         * @param {string} due_datetime - Invoice due date. By default current datetime + payment timeout
-         * @param {string|null} payment_datetime - Payment payment date
-         * @param {string|null} refund_datetime - Refund payment date
-         * @param {number} amount - Invoice amount. Readonly
-         * @param {number} recurring_amount - Invoice recurring amount. Readonly
-         * @param {number} deposit - Invoice deposit. Readonly
-         * @param {number} rest_amount - Invoice rest amount. Readonly
-         * @param {Array} taxes - Array of invoice taxes (TaxEntity[])
-         * @param {number} discount - Invoice discount amount. Readonly
-         * @param {string} currency - Invoice currency code. ISO 4217
+         * @param {string} due_datetime - Invoice due date.
+         * @param {string|null} payment_datetime - Payment date
+         * @param {string|null} refund_datetime - Refund date
+         * @param {number} amount - Invoice amount.
+         * @param {number} recurring_amount - Recurring amount.
+         * @param {number} deposit - Deposit amount.
+         * @param {number} rest_amount - Rest amount.
+         * @param {TaxEntity[]} taxes - Array of invoice taxes
+         * @param {number} discount - Discount amount.
+         * @param {string} currency - Currency code (ISO 4217)
          * @param {number} client_id - Client id
          * @param {string} description - Invoice description
-         * @param {boolean} payment_received - Payment was received by company
+         * @param {boolean} payment_received - Payment received status
          * @param {string} payment_processor - Payment processor key
-         * @param {Array} lines - Array of lines (Invoice_BookingLineEntity, Invoice_ProductLineEntity, etc.)
-         * @param {Array} promotion_instances - Array of PromotionInstanceEntity
-         * @param {Array} package_instances - Array of PackageInstanceEntity
-         * @param {string} status - Current invoice status
-         * @param {boolean} support_recurring_payment - True if invoice can be paid with recurring payment method
-         * @param {boolean} require_recurring_payment - True if invoice can be paid only with recurring payment method
-         * @param {number} recurring_profile_id - Recurring profile id, linked to this invoice
-         * @param {Object} client - AdminClientEntity
-         * @param {number} created_by_user_id - User ID that created invoice
-         * @param {Object} created_by_user - UserEntity that created invoice
-         * @param {number} approved_by_user_id - User ID that receive payment (for manual and delay payments)
-         * @param {Object} approved_by_user - UserEntity that receive payment (for manual and delay payments)
-         * @param {number} refunded_by_user_id - User ID that refunded payment
-         * @param {Object} refunded_by_user - UserEntity that refunded payment
+         * @param {Array} lines - Array of line items
+         * @param {PromotionInstanceEntity[]} promotion_instances - Promotion instances
+         * @param {PackageInstanceEntity[]} package_instances - Package instances
+         * @param {string} status - Invoice status
+         * @param {boolean} support_recurring_payment - Supports recurring payment
+         * @param {boolean} require_recurring_payment - Requires recurring payment
+         * @param {number} recurring_profile_id - Recurring profile id
+         * @param {AdminClientEntity} client - Client entity
+         * @param {number} created_by_user_id - Creator user ID
+         * @param {UserEntity} created_by_user - Creator user
+         * @param {number} approved_by_user_id - Approver user ID
+         * @param {UserEntity} approved_by_user - Approver user
+         * @param {number} refunded_by_user_id - Refunder user ID
+         * @param {UserEntity} refunded_by_user - Refunder user
          */
         constructor(
             id,
@@ -371,7 +586,7 @@
         }
 
         /**
-         * Check if invoice is paid
+         * Check if the invoice is paid
          * @returns {boolean}
          */
         isPaid() {
@@ -379,7 +594,7 @@
         }
 
         /**
-         * Check if invoice is overdue
+         * Check if the invoice is overdue
          * @returns {boolean}
          */
         isOverdue() {
@@ -388,7 +603,7 @@
         }
 
         /**
-         * Get remaining amount to be paid
+         * Get the remaining amount to be paid
          * @returns {number}
          */
         getRemainingAmount() {
@@ -396,7 +611,7 @@
         }
 
         /**
-         * Check if invoice is refunded
+         * Check if the invoice is refunded
          * @returns {boolean}
          */
         isRefunded() {
@@ -404,7 +619,7 @@
         }
 
         /**
-         * Get formatted amount with currency
+         * Get a formatted amount with currency
          * @returns {string}
          */
         getFormattedAmount() {
@@ -487,10 +702,10 @@
          * @param {number} provider_id - Provider id
          * @param {number} client_id - Client id
          * @param {number} duration - Duration in minutes
-         * @param {Object} service - ServiceEntity
-         * @param {Object} provider - ProviderEntity
-         * @param {Object} location - LocationEntity
-         * @param {Object} category - CategoryEntity
+         * @param {ServiceEntity} service - ServiceEntity
+         * @param {ProviderEntity} provider - ProviderEntity
+         * @param {LocationEntity} location - LocationEntity
+         * @param {CategoryEntity} category - CategoryEntity
          */
         constructor(id, code, is_confirmed, start_datetime, end_datetime, location_id, category_id,
                     service_id, provider_id, client_id, duration, service, provider, location, category) {
@@ -568,51 +783,114 @@
 
     class AdminBookingDetailsEntity {
         /**
-         * @param {number} id - Booking id
-         * @param {string} code - Booking code
+         * Detailed booking information (admin only)
+         *
+         * @param {number} id - Booking id. Auto-generated value.
+         * @param {string} code - Booking code. Auto-generated value.
          * @param {boolean} is_confirmed - Booking is confirmed
-         * @param {string} start_datetime - Start datetime
-         * @param {string} end_datetime - End datetime
+         * @param {string} start_datetime - Booking start datetime (ISO 8601)
+         * @param {string} end_datetime - Booking end datetime (ISO 8601)
          * @param {number|null} location_id - Provider location id
          * @param {number|null} category_id - Service category id
          * @param {number} service_id - Service id
          * @param {number} provider_id - Provider id
          * @param {number} client_id - Client id
          * @param {number} duration - Duration in minutes
-         * @param {Object} service - ServiceEntity
-         * @param {Object} provider - ProviderEntity
-         * @param {Object|null} location - LocationEntity
-         * @param {Object|null} category - CategoryEntity
-         * @param {Object} client - ClientEntity
-         * @param {string} status - Booking status
+         * @param {ServiceEntity} service - Booking service details entity
+         * @param {ProviderEntity} provider - Booking provider details entity
+         * @param {LocationEntity|null} location - Provider location entity
+         * @param {CategoryEntity|null} category - Service category entity
+         * @param {ClientEntity} client - Client details entity
+         * @param {string} status - Booking status (confirmed/pending/canceled)
          * @param {number|null} membership_id - Client membership id
          * @param {number|null} invoice_id - Invoice id
-         * @param {string|null} invoice_status - Invoice status
-         * @param {boolean|null} invoice_payment_received - Payment received
+         * @param {string|null} invoice_status - Payment status ('deleted','new','pending','cancelled','cancelled_by_timeout','error','paid')
+         * @param {boolean|null} invoice_payment_received - Payment was received
          * @param {string|null} invoice_number - Invoice number
          * @param {string|null} invoice_datetime - Invoice datetime
-         * @param {string|null} invoice_payment_processor - Payment processor
+         * @param {string|null} invoice_payment_processor - Payment processor key
+         * @param {string|null} ticket_code - Booking ticket code
+         * @param {string|null} ticket_validation_datetime - Ticket validation datetime
+         * @param {boolean|null} ticket_is_used - Ticket was already validated
+         * @param {string|null} testing_status - Medical testing status (positive/negative/inconclusive/pending)
+         * @param {number|null} user_status_id - Status custom feature id
+         * @param {boolean} can_be_edited - Can this booking be edited by user
+         * @param {boolean} can_be_canceled - Can this booking be canceled by user
+         * @param {Array|Booking_LogEntity[]} log - Booking edit log
+         * @param {Array|Booking_AdditionalFieldValueEntity[]} additional_fields - Booking intake form details
+         * @param {Array|Booking_DetailedProductQtyEntity[]} products - Booking detailed products list
+         * @param {Array|Booking_DetailedProductQtyEntity[]} attributes - Booking detailed attributes list
+         * @param {AdminInvoiceEntity|null} invoice - Invoice entity
+         * @param {ClientMembershipPaymentEntity|null} membership - Client membership object
+         * @param {StatusEntity|null} user_status - User status entity
+         * @param {string} comment - Booking comment
+         * @param {Array|ResourceEntity[]} resources - Booking resources list
          */
-        constructor(id, code, is_confirmed, start_datetime, end_datetime, location_id, category_id,
-                    service_id, provider_id, client_id, duration, service, provider, location, category,
-                    client, status, membership_id, invoice_id, invoice_status, invoice_payment_received,
-                    invoice_number, invoice_datetime, invoice_payment_processor) {
+        constructor(
+            id,
+            code,
+            is_confirmed,
+            start_datetime,
+            end_datetime,
+            location_id,
+            category_id,
+            service_id,
+            provider_id,
+            client_id,
+            duration,
+            service,
+            provider,
+            location,
+            category,
+            client,
+            status,
+            membership_id,
+            invoice_id,
+            invoice_status,
+            invoice_payment_received,
+            invoice_number,
+            invoice_datetime,
+            invoice_payment_processor,
+            ticket_code,
+            ticket_validation_datetime,
+            ticket_is_used,
+            testing_status,
+            user_status_id,
+            can_be_edited,
+            can_be_canceled,
+            log,
+            additional_fields,
+            products,
+            attributes,
+            invoice,
+            membership,
+            user_status,
+            comment,
+            resources
+        ) {
+            // Core booking information
             this.id = id;
             this.code = code;
             this.is_confirmed = is_confirmed;
             this.start_datetime = start_datetime;
             this.end_datetime = end_datetime;
+
+            // Service and provider references
             this.location_id = location_id;
             this.category_id = category_id;
             this.service_id = service_id;
             this.provider_id = provider_id;
             this.client_id = client_id;
             this.duration = duration;
+
+            // Entity references
             this.service = service;
             this.provider = provider;
             this.location = location;
             this.category = category;
             this.client = client;
+
+            // Status information
             this.status = status;
             this.membership_id = membership_id;
             this.invoice_id = invoice_id;
@@ -621,6 +899,143 @@
             this.invoice_number = invoice_number;
             this.invoice_datetime = invoice_datetime;
             this.invoice_payment_processor = invoice_payment_processor;
+
+            // Ticket information
+            this.ticket_code = ticket_code;
+            this.ticket_validation_datetime = ticket_validation_datetime;
+            this.ticket_is_used = ticket_is_used;
+
+            // Testing and custom status
+            this.testing_status = testing_status;
+            this.user_status_id = user_status_id;
+
+            // Permissions
+            this.can_be_edited = can_be_edited;
+            this.can_be_canceled = can_be_canceled;
+
+            // Logs and additional data
+            this.log = log;
+            this.additional_fields = additional_fields;
+            this.products = products;
+            this.attributes = attributes;
+
+            // Related entities
+            this.invoice = invoice;
+            this.membership = membership;
+            this.user_status = user_status;
+
+            // Additional information
+            this.comment = comment;
+            this.resources = resources;
+        }
+
+        /**
+         * Check if booking is currently active
+         * @returns {boolean}
+         */
+        isActive() {
+            const now = new Date();
+            const start = new Date(this.start_datetime);
+            const end = new Date(this.end_datetime);
+            return now >= start && now <= end;
+        }
+
+        /**
+         * Check if booking requires payment
+         * @returns {boolean}
+         */
+        requiresPayment() {
+            return this.invoice_id !== null && this.invoice_status !== 'paid';
+        }
+
+        /**
+         * Check if booking can be modified
+         * @returns {boolean}
+         */
+        isModifiable() {
+            return this.can_be_edited &&
+                !this.ticket_is_used &&
+                this.status === 'confirmed' &&
+                new Date() < new Date(this.start_datetime);
+        }
+
+        /**
+         * Get formatted duration (HH:MM format)
+         * @returns {string}
+         */
+        getFormattedDuration() {
+            const hours = Math.floor(this.duration / 60);
+            const minutes = this.duration % 60;
+            return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+        }
+
+        /**
+         * Check if medical testing is required
+         * @returns {boolean}
+         */
+        requiresMedicalTesting() {
+            return this.testing_status !== null;
+        }
+
+        /**
+         * Check if payment was successfully received
+         * @returns {boolean}
+         */
+        isPaymentReceived() {
+            return this.invoice_payment_received === true ||
+                this.invoice_status === 'paid';
+        }
+
+        /**
+         * Get the primary resource (if available)
+         * @returns {ResourceEntity|null}
+         */
+        getPrimaryResource() {
+            return this.resources.length > 0 ? this.resources[0] : null;
+        }
+
+        /**
+         * Get all intake form fields as key-value pairs
+         * @returns {Object}
+         */
+        getIntakeFormData() {
+            return this.additional_fields.reduce((acc, field) => {
+                acc[field.field_id] = field.value;
+                return acc;
+            }, {});
+        }
+
+        /**
+         * Check if booking is upcoming (within next 24 hours)
+         * @returns {boolean}
+         */
+        isUpcoming() {
+            const now = new Date();
+            const start = new Date(this.start_datetime);
+            const twentyFourHours = 24 * 60 * 60 * 1000;
+            return start > now && (start - now) < twentyFourHours;
+        }
+
+        /**
+         * Get the total price including products and attributes
+         * @returns {number}
+         */
+        getTotalPrice() {
+            let total = this.service.price || 0;
+
+            // Add products cost
+            if (this.products && this.products.length) {
+                total += this.products.reduce((sum, product) =>
+                    sum + (product.price * product.quantity), 0);
+            }
+
+            // Add attributes cost
+            if (this.attributes && this.attributes.length) {
+                total += this.attributes.reduce((sum, attribute) =>
+                    sum + (attribute.price * attribute.quantity), 0);
+            }
+
+            return total;
         }
     }
     class ServiceEntity {
@@ -1711,5 +2126,5 @@
             this.created_datetime = created_datetime;
         }
     }
-    console.log(AdminClient.default().getInvoice('3mbs3ej9k'));
+    console.log(AdminClient.default().getBookingDetails('3mbs3ej9k'));
 })();

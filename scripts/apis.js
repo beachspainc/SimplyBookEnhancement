@@ -25,6 +25,48 @@
     };
 
     /**
+     *
+     * @param cacheKey
+     * @param ttl
+     * @returns {function(*, *, *): *}
+     */
+    function cacheResult(cacheKey, ttl = 60 * 60 * 1000) {
+        return function (target, propertyKey, descriptor) {
+            const originalMethod = descriptor.value;
+
+            descriptor.value = async function (...args) {
+                const key = `${cacheKey}:${propertyKey}:${JSON.stringify(args)}`;
+
+                try {
+                    const cached = localStorage.getItem(key);
+                    if (cached) {
+                        const { value, expires } = JSON.parse(cached);
+                        if (!expires || Date.now() < expires) {
+                            console.debug(`[Cache] Hit for ${key}`);
+                            return value;
+                        }
+                    }
+                } catch (e) {
+                    console.warn(`Cache load failed for ${key}`, e);
+                }
+
+                console.debug(`[Cache] Miss for ${key}`);
+                const result = await originalMethod.apply(this, args);
+                try {
+                    localStorage.setItem(key, JSON.stringify({
+                        value: result,
+                        expires: ttl ? Date.now() + ttl : null
+                    }));
+                } catch (e) {
+                    console.warn(`Cache save failed for ${key}`, e);
+                }
+                return result;
+            };
+
+            return descriptor;
+        };
+    }
+    /**
      * 获取构造函数参数信息
      * @param {Function} targetClass - 目标类
      * @returns {Object} { paramNames: Array<string>, paramTypes: { [name]: string } }
@@ -147,82 +189,174 @@
             this.baseUrl = base_url;
         }
 
+        /**
+         * 发送 HTTP 请求（精简版）
+         * @param {string} endpoint - API 端点
+         * @param {string} method - HTTP 方法
+         * @param {object} [body] - 请求体数据
+         * @param {object} [headers={}] - 额外的请求头
+         * @param {object} [params] - 查询参数
+         * @returns {Promise<object>} 响应数据
+         * @throws {APIError} 各种 API 错误
+         */
         async request(endpoint, method, body, headers = {}, params) {
             return new Promise((resolve, reject) => {
+                // 构建 URL 和请求详情
                 let url = `${this.baseUrl}${endpoint}`;
+                const requestDetails = {
+                    url,
+                    method,
+                    headers: { "Content-Type": "application/json", ...headers },
+                    body: body ? JSON.stringify(body) : undefined,
+                    params
+                };
 
-                // Add query parameters for GET requests
+                // 添加 GET 查询参数
                 if (params && method === "GET") {
-                    const query = new URLSearchParams(params).toString();
-                    url += `?${query}`;
+                    url += `?${new URLSearchParams(params)}`;
                 }
+
                 GM_xmlhttpRequest({
-                    method: method,
-                    url: url,
-                    headers: {
-                        "Content-Type": "application/json",
-                        ...headers
-                    },
-                    data: body ? JSON.stringify(body) : undefined,
+                    method,
+                    url,
+                    headers: requestDetails.headers,
+                    data: requestDetails.body,
+
                     onload: (response) => {
                         if (response.status >= 200 && response.status < 300) {
-                            try {
-                                const data = response.responseText ? JSON.parse(response.responseText) : null;
-                                resolve(data);
-                            } catch (e) {
-                                resolve(null);
-                            }
-                        } else {
-                            let errorDetails = {};
-                            try {
-                                const errorData = JSON.parse(response.responseText);
-                                errorDetails = errorData.errors || {};
-                            } catch (e) {
-                                // Unable to parse error details
-                            }
-
-                            if (response.status === 400) {
-                                reject(new APIError("Invalid request data", "BadRequest", errorDetails));
-                            } else if (response.status === 403) {
-                                reject(new APIError("Access denied", "AccessDenied"));
-                            } else {
-                                reject(new APIError(`HTTP error! status: ${response.status}`, "HTTPError"));
-                            }
+                            resolve(response.responseText ? JSON.parse(response.responseText) : null);
+                            return;
                         }
+
+                        const errorData = this.#parseErrorResponse(response);
+                        const error = this.#createApiError(response.status, errorData);
+
+                        error.request = requestDetails;
+                        error.response = {
+                            status: response.status,
+                            headers: response.headers,
+                            body: response.responseText
+                        };
+                        reject(error);
                     },
+
                     onerror: (error) => {
-                        reject(new APIError(`Request failed: ${error.error}`, "NetworkError"));
+                        const apiError = new APIError(`Network error: ${error.error}`, "NetworkError");
+                        apiError.request = requestDetails;
+                        console.error("Network Error:", apiError.message, { request: requestDetails, error });
+                        reject(apiError);
                     }
                 });
             });
         }
+
+        /**
+         * 解析错误响应
+         * @private
+         */
+        #parseErrorResponse(response) {
+            try {
+                const data = JSON.parse(response.responseText);
+                return data.errors || {};
+            } catch (e) {
+                return {};
+            }
+        }
+
+        /**
+         * 创建 API 错误对象
+         * @private
+         */
+        #createApiError(status, errorDetails) {
+            const messages = {
+                400: "Invalid request data",
+                403: "Access denied",
+                404: "Resource not found",
+                500: "Internal server error"
+            };
+
+            const defaultMessage = `HTTP error: ${status}`;
+            const message = messages[status] || defaultMessage;
+
+            return new APIError(message, `HTTP_${status}`, errorDetails);
+        }
     }
+
     class AdminClient extends RestClient {
         static DEFAULT;
-
+        static #TOKEN_CACHE_KEY = "AdminClient_token_cache";
+        /** @type {TokenEntity} */
+        token;
         constructor(base_url, company, username, password) {
             super(base_url);
             this.client = new AuthenticationClient(base_url);
             this.company = company;
-            this.#authenticated = this.#authenticate(username, password);
+            const cachedToken = AdminClient.#loadTokenFromCache(company, username);
+            if (cachedToken) {
+                this.token = cachedToken;
+                this.#authenticated = Promise.resolve();
+            } else {
+                this.#authenticated = this.#authenticate(username, password);
+            }
         }
 
-        #authenticated
+        #authenticated;
         async #authenticate(username, password) {
             this.token = await this.client.authenticate(this.company, username, password);
+            AdminClient.#saveTokenToCache(this.company, username, this.token);
+        }
+
+        async #refreshToken() {
+            if(!this.token) throw new APIError('Token not found');
+            const username = this.token.login;
+            this.token = await this.client.refreshToken(this.company, this.token.refresh_token);
+            AdminClient.#saveTokenToCache(this.company, username, this.token);
+        }
+
+        static #loadTokenFromCache(company, username) {
+            try {
+                const cache = JSON.parse(localStorage.getItem(AdminClient.#TOKEN_CACHE_KEY)) || {};
+                return cache[`${company}:${username}`] || null;
+            } catch (e) {
+                console.error("Failed to load token from cache", e);
+                return null;
+            }
+        }
+
+        static #saveTokenToCache(company, username, token) {
+            try {
+                const cache = JSON.parse(localStorage.getItem(AdminClient.#TOKEN_CACHE_KEY)) || {};
+                cache[`${company}:${username}`] = token;
+                localStorage.setItem(AdminClient.#TOKEN_CACHE_KEY, JSON.stringify(cache));
+            } catch (e) {
+                console.error("Failed to save token to cache", e);
+            }
         }
 
         async request(endpoint, method, body, headers = {}, params) {
             await this.#authenticated;
             if (!this.token) throw new APIError("Authentication failed", "AuthenticationFailed");
-            //TODO: status 409 refresh token
-            return super.request(endpoint, method, body, {
-                ...headers,
-                "X-Company-Login": this.company,
-                "X-Token": this.token.token
-            }, params);
+            try {
+                return await super.request(endpoint, method, body, {
+                    ...headers,
+                    "X-Company-Login": this.company,
+                    "X-Token": this.token.token
+                }, params);
+            } catch (error) {
+                if(error.response.status === 401 && JSON.parse(error.response.body).code === 419) {
+                    await this.#refreshToken();
+                    return this.request(endpoint, method, body, params);
+                }
+                throw error;
+            }
+
         }
 
+
+        /**
+         * Get API Client as Singleton
+         * @returns {AdminClient} API Client
+         */
         static default() {
             if (AdminClient.DEFAULT) return AdminClient.DEFAULT;
             const credentials = unsafeWindow.SimplyBookCredentialManager.getCredentials(CONFIG.CRYPTO_TOKEN);
@@ -250,8 +384,60 @@
          */
         async getBookingDetails(id) {
             const data = await this.request(`/admin/bookings/${id}`, "GET");
-            console.log(data);
             return new AdminBookingDetailsEntity(...valuesOf(data, AdminBookingDetailsEntity));
+        }
+
+        /**
+         * 获取预订列表（使用 request 的 params 参数）
+         * @param {number} [page=1] - 页码
+         * @param {number} [on_page=10] - 每页数量
+         * @param {Object} [filter] - 过滤条件
+         * @returns {Promise<{entities: AdminReportBookingEntity[], pagination: object}>} 预订列表和分页信息
+         */
+        async getBookings(page = 1, on_page = 10, filter = null) {
+            const params = { page, on_page };
+            if (filter) {
+                for (const [key, value] of Object.entries(filter)) {
+                    if (value == null) continue;
+                    if (key === 'additional_fields') {
+                        for (const [field, val] of Object.entries(value)) params[`filter[additional_fields][${field}]`] = val;
+                    }
+                    else if (Array.isArray(value)) {
+                        value.forEach((item, index) => {
+                            params[`filter[${key}][${index}]`] = item;
+                        });
+                    }
+                    else params[`filter[${key}]`] = value;
+                }
+            }
+            const response = await this.request('/admin/bookings', 'GET', null, {}, params);
+            if (!response?.data) throw new APIError('InvalidResponse', 'Missing data in API response');
+            const entities = response.data.map(item =>
+                new AdminReportBookingEntity(...valuesOf(item, AdminReportBookingEntity))
+            );
+            return {
+                entities,
+                pagination: response.meta?.pagination || {
+                    total: entities.length,
+                    per_page: on_page,
+                    current_page: page,
+                    total_pages: Math.ceil(entities.length / on_page) || 1
+                }
+            };
+        }
+
+        /**
+         * 通过预订代码获取预订
+         * @param {string} code - 预订代码
+         * @returns {Promise<AdminReportBookingEntity>} 预订实体
+         */
+        async getBookingByCode(code) {
+            const { entities } = await this.getBookings(1, 1, { search: code });
+            if (!entities?.length) return null;
+            for(const entity of entities) {
+                if(entity.code === code) return entity;
+            }
+            return null;
         }
 
     }
@@ -498,6 +684,7 @@
          * @param {number} deposit - Deposit amount.
          * @param {number} rest_amount - Rest amount.
          * @param {TaxEntity[]} taxes - Array of invoice taxes
+         * @param {number} tip - Tips
          * @param {number} discount - Discount amount.
          * @param {string} currency - Currency code (ISO 4217)
          * @param {number} client_id - Client id
@@ -531,6 +718,7 @@
             deposit,
             rest_amount,
             taxes,
+            tip,
             discount,
             currency,
             client_id,
@@ -563,6 +751,7 @@
             this.deposit = deposit;
             this.rest_amount = rest_amount;
             this.taxes = taxes;
+            this.tip = tip;
             this.discount = discount;
             this.currency = currency;
             this.client_id = client_id;
@@ -639,7 +828,7 @@
          * @param {number} client_id - Client id
          * @param {Object} service - ServiceEntity
          * @param {Object} provider - ProviderEntity
-         * @param {Object} location - LocationEntity
+         * @param {LocationEntity} location - LocationEntity
          * @param {Object} category - CategoryEntity
          * @param {number} count - Group booking count
          * @param {Object} recurring_settings - Booking_RecurringSettingsEntity
@@ -726,7 +915,268 @@
             this.category = category;
         }
     }
+    class AdminReportBookingEntity {
+        /**
+         * Admin booking list information entity
+         *
+         * @param {number} id - Booking id. Auto-generated value.
+         * @param {string} code - Booking code. Auto-generated value.
+         * @param {boolean} is_confirmed - Booking is confirmed
+         * @param {string} start_datetime - Booking start datetime (ISO 8601)
+         * @param {string} end_datetime - Booking end datetime (ISO 8601)
+         * @param {number|null} location_id - Provider location id
+         * @param {number|null} category_id - Service category id
+         * @param {number} service_id - Service id
+         * @param {number} provider_id - Provider id
+         * @param {number} client_id - Client id
+         * @param {number} duration - Duration in minutes
+         * @param {ServiceEntity} service - Booking service details entity
+         * @param {ProviderEntity} provider - Booking provider details entity
+         * @param {LocationEntity|null} location - Provider location entity
+         * @param {CategoryEntity|null} category - Service category entity
+         * @param {ClientEntity} client - Client details entity
+         * @param {string} status - Booking status (confirmed/pending/canceled)
+         * @param {number|null} membership_id - Client membership id
+         * @param {number|null} invoice_id - Invoice id
+         * @param {string|null} invoice_status - Payment status ('deleted','new','pending','cancelled','cancelled_by_timeout','error','paid')
+         * @param {boolean|null} invoice_payment_received - Payment was received
+         * @param {string|null} invoice_number - Invoice number
+         * @param {string|null} invoice_datetime - Invoice datetime
+         * @param {string|null} invoice_payment_processor - Payment processor key
+         * @param {string|null} ticket_code - Booking ticket code
+         * @param {string|null} ticket_validation_datetime - Ticket validation datetime
+         * @param {boolean|null} ticket_is_used - Ticket was already validated
+         * @param {string|null} testing_status - Medical testing status (positive/negative/inconclusive/pending)
+         * @param {number|null} user_status_id - Status custom feature id
+         * @param {boolean} can_be_edited - Can this booking be edited by user
+         * @param {boolean} can_be_canceled - Can this booking be canceled by user
+         */
+        constructor(
+            id,
+            code,
+            is_confirmed,
+            start_datetime,
+            end_datetime,
+            location_id,
+            category_id,
+            service_id,
+            provider_id,
+            client_id,
+            duration,
+            service,
+            provider,
+            location,
+            category,
+            client,
+            status,
+            membership_id,
+            invoice_id,
+            invoice_status,
+            invoice_payment_received,
+            invoice_number,
+            invoice_datetime,
+            invoice_payment_processor,
+            ticket_code,
+            ticket_validation_datetime,
+            ticket_is_used,
+            testing_status,
+            user_status_id,
+            can_be_edited,
+            can_be_canceled
+        ) {
+            // Core booking information
+            this.id = id;
+            this.code = code;
+            this.is_confirmed = is_confirmed;
+            this.start_datetime = start_datetime;
+            this.end_datetime = end_datetime;
 
+            // Service and provider references
+            this.location_id = location_id;
+            this.category_id = category_id;
+            this.service_id = service_id;
+            this.provider_id = provider_id;
+            this.client_id = client_id;
+            this.duration = duration;
+
+            // Entity references
+            this.service = service;
+            this.provider = provider;
+            this.location = location;
+            this.category = category;
+            this.client = client;
+
+            // Status information
+            this.status = status;
+            this.membership_id = membership_id;
+            this.invoice_id = invoice_id;
+            this.invoice_status = invoice_status;
+            this.invoice_payment_received = invoice_payment_received;
+            this.invoice_number = invoice_number;
+            this.invoice_datetime = invoice_datetime;
+            this.invoice_payment_processor = invoice_payment_processor;
+
+            // Ticket information
+            this.ticket_code = ticket_code;
+            this.ticket_validation_datetime = ticket_validation_datetime;
+            this.ticket_is_used = ticket_is_used;
+
+            // Testing and custom status
+            this.testing_status = testing_status;
+            this.user_status_id = user_status_id;
+
+            // Permissions
+            this.can_be_edited = can_be_edited;
+            this.can_be_canceled = can_be_canceled;
+        }
+
+        /**
+         * Check if booking is currently active
+         * @returns {boolean}
+         */
+        isActive() {
+            const now = new Date();
+            const start = new Date(this.start_datetime);
+            const end = new Date(this.end_datetime);
+            return now >= start && now <= end;
+        }
+
+        /**
+         * Check if booking is in the past
+         * @returns {boolean}
+         */
+        isPast() {
+            return new Date() > new Date(this.end_datetime);
+        }
+
+        /**
+         * Check if booking is upcoming (future)
+         * @returns {boolean}
+         */
+        isUpcoming() {
+            return new Date() < new Date(this.start_datetime);
+        }
+
+        /**
+         * Check if booking requires payment
+         * @returns {boolean}
+         */
+        requiresPayment() {
+            return this.invoice_id !== null &&
+                this.invoice_status !== 'paid' &&
+                this.invoice_status !== 'cancelled';
+        }
+
+        /**
+         * Check if payment was successfully received
+         * @returns {boolean}
+         */
+        isPaymentReceived() {
+            return this.invoice_payment_received === true ||
+                this.invoice_status === 'paid';
+        }
+
+        /**
+         * Check if booking is confirmed and not cancelled
+         * @returns {boolean}
+         */
+        isConfirmed() {
+            return this.is_confirmed && this.status === 'confirmed';
+        }
+
+        /**
+         * Check if medical testing is required
+         * @returns {boolean}
+         */
+        requiresMedicalTesting() {
+            return this.testing_status !== null;
+        }
+
+        /**
+         * Check if booking can be modified
+         * @returns {boolean}
+         */
+        isModifiable() {
+            return this.can_be_edited &&
+                !this.ticket_is_used &&
+                this.status === 'confirmed' &&
+                new Date() < new Date(this.start_datetime);
+        }
+
+        /**
+         * Check if booking can be cancelled
+         * @returns {boolean}
+         */
+        isCancellable() {
+            return this.can_be_canceled &&
+                !this.ticket_is_used &&
+                this.status === 'confirmed' &&
+                new Date() < new Date(this.start_datetime);
+        }
+
+        /**
+         * Get formatted duration (HH:MM format)
+         * @returns {string}
+         */
+        getFormattedDuration() {
+            const hours = Math.floor(this.duration / 60);
+            const minutes = this.duration % 60;
+            return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+        }
+
+        /**
+         * Get booking date (without time)
+         * @returns {string}
+         */
+        getBookingDate() {
+            return this.start_datetime.split('T')[0];
+        }
+
+        /**
+         * Get start time (HH:MM format)
+         * @returns {string}
+         */
+        getStartTime() {
+            return this.start_datetime.split('T')[1].substring(0, 5);
+        }
+
+        /**
+         * Get end time (HH:MM format)
+         * @returns {string}
+         */
+        getEndTime() {
+            return this.end_datetime.split('T')[1].substring(0, 5);
+        }
+
+        /**
+         * Get time range (HH:MM - HH:MM format)
+         * @returns {string}
+         */
+        getTimeRange() {
+            return `${this.getStartTime()} - ${this.getEndTime()}`;
+        }
+
+        /**
+         * Get the service price (if available)
+         * @returns {number}
+         */
+        getServicePrice() {
+            return this.service?.price || 0;
+        }
+
+        /**
+         * Get simplified status for reporting
+         * @returns {string}
+         */
+        getReportStatus() {
+            if (this.status === 'cancelled') return 'Cancelled';
+            if (this.isPaymentReceived()) return 'Paid';
+            if (this.requiresPayment()) return 'Payment Pending';
+            if (this.ticket_is_used) return 'Completed';
+            if (this.isPast()) return 'Completed';
+            return this.status.charAt(0).toUpperCase() + this.status.slice(1);
+        }
+    }
     class BookingBatchEntity {
         /**
          * @param {number} id - Batch id
@@ -1040,6 +1490,7 @@
     }
     class ServiceEntity {
         /**
+         * TODO
          * @param {number} id - Service id
          * @param {string} name - Service name
          * @param {number} duration - Service duration in minutes
@@ -1120,6 +1571,7 @@
 
     class ClientEntity {
         /**
+         * TODO
          * @param {number} id - Client id
          * @param {string} name - Client name
          * @param {string} email - Client email
@@ -1145,32 +1597,9 @@
         }
     }
 
-    class InvoiceEntity {
-        /**
-         * @param {number} id - Invoice id
-         * @param {string} number - Invoice number
-         * @param {string} status - Invoice status
-         * @param {number} amount - Invoice amount
-         * @param {number} paid_amount - Paid amount
-         * @param {string} payment_processor - Payment processor
-         * @param {string} created_datetime - Creation datetime
-         * @param {string} payment_datetime - Payment datetime
-         * @param {number} booking_id - Related booking id
-         */
-        constructor(id, number, status, amount, paid_amount, payment_processor, created_datetime, payment_datetime, booking_id) {
-            this.id = id;
-            this.number = number;
-            this.status = status;
-            this.amount = amount;
-            this.paid_amount = paid_amount;
-            this.payment_processor = payment_processor;
-            this.created_datetime = created_datetime;
-            this.payment_datetime = payment_datetime;
-            this.booking_id = booking_id;
-        }
-    }
     class CompanyEntity {
         /**
+         * TODO
          * @param {string} login - Company login name
          * @param {string} name - Company name
          * @param {string} domain - Company domain
@@ -1192,25 +1621,9 @@
         }
     }
 
-    class PaymentProcessorEntity {
-        /**
-         * @param {string} id - Processor identifier
-         * @param {string} name - Processor name
-         * @param {boolean} is_active - Active status
-         * @param {Object} settings - Processor settings
-         * @param {string[]} supported_currencies - Supported currencies
-         */
-        constructor(id, name, is_active, settings, supported_currencies) {
-            this.id = id;
-            this.name = name;
-            this.is_active = is_active;
-            this.settings = settings;
-            this.supported_currencies = supported_currencies;
-        }
-    }
-
     class MembershipEntity {
         /**
+         * TODO
          * @param {number} id - Membership id
          * @param {string} name - Membership name
          * @param {number} price - Membership price
@@ -1230,107 +1643,10 @@
         }
     }
 
-    class ClientMembershipEntity {
-        /**
-         * @param {number} id - Client membership id
-         * @param {number} client_id - Client id
-         * @param {number} membership_id - Membership id
-         * @param {string} start_date - Start date
-         * @param {string} end_date - End date
-         * @param {boolean} is_active - Active status
-         * @param {Object} usage - Usage statistics
-         */
-        constructor(id, client_id, membership_id, start_date, end_date, is_active, usage) {
-            this.id = id;
-            this.client_id = client_id;
-            this.membership_id = membership_id;
-            this.start_date = start_date;
-            this.end_date = end_date;
-            this.is_active = is_active;
-            this.usage = usage;
-        }
-    }
-
-    class EventEntity {
-        /**
-         * @param {number} id - Event id
-         * @param {string} title - Event title
-         * @param {string} start_datetime - Start datetime
-         * @param {string} end_datetime - End datetime
-         * @param {string} description - Event description
-         * @param {number} provider_id - Provider id
-         * @param {number} location_id - Location id
-         * @param {boolean} is_public - Public visibility
-         */
-        constructor(id, title, start_datetime, end_datetime, description, provider_id, location_id, is_public) {
-            this.id = id;
-            this.title = title;
-            this.start_datetime = start_datetime;
-            this.end_datetime = end_datetime;
-            this.description = description;
-            this.provider_id = provider_id;
-            this.location_id = location_id;
-            this.is_public = is_public;
-        }
-    }
-
-    class WorkScheduleEntity {
-        /**
-         * @param {number} provider_id - Provider id
-         * @param {Object} schedule - Weekly schedule
-         * @param {Object[]} exceptions - Schedule exceptions
-         * @param {string[]} holidays - Holiday dates
-         */
-        constructor(provider_id, schedule, exceptions, holidays) {
-            this.provider_id = provider_id;
-            this.schedule = schedule;
-            this.exceptions = exceptions;
-            this.holidays = holidays;
-        }
-    }
-
-    class NotificationTemplateEntity {
-        /**
-         * @param {number} id - Template id
-         * @param {string} name - Template name
-         * @param {string} type - Template type (email/sms)
-         * @param {string} subject - Email subject
-         * @param {string} body - Template body
-         * @param {Object} variables - Available variables
-         * @param {boolean} is_active - Active status
-         */
-        constructor(id, name, type, subject, body, variables, is_active) {
-            this.id = id;
-            this.name = name;
-            this.type = type;
-            this.subject = subject;
-            this.body = body;
-            this.variables = variables;
-            this.is_active = is_active;
-        }
-    }
-
-    class CustomFieldEntity {
-        /**
-         * @param {number} id - Field id
-         * @param {string} name - Field name
-         * @param {string} type - Field type
-         * @param {boolean} required - Required status
-         * @param {Object} settings - Field settings
-         * @param {string[]} options - Field options for select types
-         */
-        constructor(id, name, type, required, settings, options) {
-            this.id = id;
-            this.name = name;
-            this.type = type;
-            this.required = required;
-            this.settings = settings;
-            this.options = options;
-        }
-    }
 
     class ProductEntity {
         /**
+         * TODO
          * @param {number} id - Product id
          * @param {string} name - Product name
          * @param {string} sku - Product SKU
@@ -1352,27 +1668,9 @@
         }
     }
 
-    class ServiceCategoryEntity {
-        /**
-         * @param {number} id - Category id
-         * @param {string} name - Category name
-         * @param {string} description - Category description
-         * @param {number} parent_id - Parent category id
-         * @param {boolean} is_active - Active status
-         * @param {number} sort_order - Sort order
-         */
-        constructor(id, name, description, parent_id, is_active, sort_order) {
-            this.id = id;
-            this.name = name;
-            this.description = description;
-            this.parent_id = parent_id;
-            this.is_active = is_active;
-            this.sort_order = sort_order;
-        }
-    }
-
     class TimeSlotEntity {
         /**
+         * TODO
          * @param {string} start_time - Start time
          * @param {string} end_time - End time
          * @param {number} provider_id - Provider id
@@ -1390,93 +1688,11 @@
         }
     }
 
-    class PaymentEntity {
-        /**
-         * @param {number} id - Payment id
-         * @param {number} invoice_id - Invoice id
-         * @param {number} amount - Payment amount
-         * @param {string} processor - Payment processor
-         * @param {string} status - Payment status
-         * @param {string} transaction_id - Transaction id
-         * @param {string} created_datetime - Creation datetime
-         */
-        constructor(id, invoice_id, amount, processor, status, transaction_id, created_datetime) {
-            this.id = id;
-            this.invoice_id = invoice_id;
-            this.amount = amount;
-            this.processor = processor;
-            this.status = status;
-            this.transaction_id = transaction_id;
-            this.created_datetime = created_datetime;
-        }
-    }
 
-    class ErrorEntity {
-        /**
-         * @param {string} code - Error code
-         * @param {string} message - Error message
-         * @param {Object} details - Error details
-         * @param {string} type - Error type
-         */
-        constructor(code, message, details, type) {
-            this.code = code;
-            this.message = message;
-            this.details = details;
-            this.type = type;
-        }
-    }
-
-    class ConfigEntity {
-        /**
-         * @param {string} key - Config key
-         * @param {*} value - Config value
-         * @param {string} type - Value type
-         * @param {Object} metadata - Additional metadata
-         */
-        constructor(key, value, type, metadata) {
-            this.key = key;
-            this.value = value;
-            this.type = type;
-            this.metadata = metadata;
-        }
-    }
-
-    class StatisticsEntity {
-        /**
-         * @param {string} period - Statistics period
-         * @param {Object} data - Statistics data
-         * @param {Object} metrics - Statistics metrics
-         * @param {Object} filters - Applied filters
-         */
-        constructor(period, data, metrics, filters) {
-            this.period = period;
-            this.data = data;
-            this.metrics = metrics;
-            this.filters = filters;
-        }
-    }
-
-    class LogEntity {
-        /**
-         * @param {number} id - Log entry id
-         * @param {string} type - Log type
-         * @param {string} message - Log message
-         * @param {Object} context - Log context
-         * @param {string} created_datetime - Creation datetime
-         * @param {string} level - Log level
-         */
-        constructor(id, type, message, context, created_datetime, level) {
-            this.id = id;
-            this.type = type;
-            this.message = message;
-            this.context = context;
-            this.created_datetime = created_datetime;
-            this.level = level;
-        }
-    }
 
     class UserEntity {
         /**
+         * TODO
          * @param {number} id - User id
          * @param {string} username - Username
          * @param {string} email - User email
@@ -1498,633 +1714,952 @@
         }
     }
 
-    class NotificationEntity {
-        /**
-         * @param {number} id - Notification id
-         * @param {string} type - Notification type
-         * @param {string} title - Notification title
-         * @param {string} message - Notification message
-         * @param {boolean} is_read - Read status
-         * @param {number} user_id - Target user id
-         * @param {string} created_datetime - Creation datetime
-         */
-        constructor(id, type, title, message, is_read, user_id, created_datetime) {
-            this.id = id;
-            this.type = type;
-            this.title = title;
-            this.message = message;
-            this.is_read = is_read;
-            this.user_id = user_id;
-            this.created_datetime = created_datetime;
-        }
-    }
-
-    class FileEntity {
-        /**
-         * @param {number} id - File id
-         * @param {string} name - File name
-         * @param {string} path - File path
-         * @param {string} mime_type - MIME type
-         * @param {number} size - File size in bytes
-         * @param {string} hash - File hash
-         * @param {string} upload_datetime - Upload datetime
-         */
-        constructor(id, name, path, mime_type, size, hash, upload_datetime) {
-            this.id = id;
-            this.name = name;
-            this.path = path;
-            this.mime_type = mime_type;
-            this.size = size;
-            this.hash = hash;
-            this.upload_datetime = upload_datetime;
-        }
-    }
-
-    class ReviewEntity {
-        /**
-         * @param {number} id - Review id
-         * @param {number} booking_id - Related booking id
-         * @param {number} client_id - Client id
-         * @param {number} rating - Rating value
-         * @param {string} comment - Review comment
-         * @param {boolean} is_published - Published status
-         * @param {string} created_datetime - Creation datetime
-         */
-        constructor(id, booking_id, client_id, rating, comment, is_published, created_datetime) {
-            this.id = id;
-            this.booking_id = booking_id;
-            this.client_id = client_id;
-            this.rating = rating;
-            this.comment = comment;
-            this.is_published = is_published;
-            this.created_datetime = created_datetime;
-        }
-    }
-
-    class CouponEntity {
-        /**
-         * @param {number} id - Coupon id
-         * @param {string} code - Coupon code
-         * @param {string} type - Coupon type
-         * @param {number} value - Discount value
-         * @param {number} usage_limit - Usage limit
-         * @param {number} used_count - Times used
-         * @param {string} expiry_date - Expiry date
-         * @param {boolean} is_active - Active status
-         */
-        constructor(id, code, type, value, usage_limit, used_count, expiry_date, is_active) {
-            this.id = id;
-            this.code = code;
-            this.type = type;
-            this.value = value;
-            this.usage_limit = usage_limit;
-            this.used_count = used_count;
-            this.expiry_date = expiry_date;
-            this.is_active = is_active;
-        }
-    }
-
-    class ReportEntity {
-        /**
-         * @param {number} id - Report id
-         * @param {string} type - Report type
-         * @param {Object} parameters - Report parameters
-         * @param {Object} data - Report data
-         * @param {string} format - Report format
-         * @param {string} generated_datetime - Generation datetime
-         */
-        constructor(id, type, parameters, data, format, generated_datetime) {
-            this.id = id;
-            this.type = type;
-            this.parameters = parameters;
-            this.data = data;
-            this.format = format;
-            this.generated_datetime = generated_datetime;
-        }
-    }
 
     class ResourceEntity {
         /**
+         * Resource info
          * @param {number} id - Resource id
          * @param {string} name - Resource name
-         * @param {string} type - Resource type
-         * @param {boolean} is_shared - Shared status
-         * @param {number} quantity - Available quantity
-         * @param {Object} settings - Resource settings
-         * @param {boolean} is_active - Active status
          */
-        constructor(id, name, type, is_shared, quantity, settings, is_active) {
+        constructor(id, name) {
             this.id = id;
             this.name = name;
-            this.type = type;
-            this.is_shared = is_shared;
-            this.quantity = quantity;
-            this.settings = settings;
-            this.is_active = is_active;
         }
     }
 
-    class SubscriptionEntity {
+
+    class PromotionEntity {
         /**
-         * @param {number} id - Subscription id
-         * @param {string} plan - Subscription plan
-         * @param {string} status - Subscription status
-         * @param {string} start_date - Start date
-         * @param {string} end_date - End date
-         * @param {number} price - Subscription price
-         * @param {string} billing_cycle - Billing cycle
-         * @param {Object} features - Included features
+         * Entity that contains promotion information
+         *
+         * @param {number} id - Promotion id. Auto-generated value.
+         * @param {string} name - Promotion name
+         * @param {string} description - Promotion description
+         * @param {number} file_id - Image file id
+         * @param {string} picture_preview - Path to preview picture
+         * @param {string} picture_large - Path to large picture
+         * @param {boolean} is_visible - Is promotion visible on public site
+         * @param {boolean} is_active - Is promotion active
+         * @param {number} position - Promotion position
+         * @param {number} price - Promotion price to purchase (gift card)
+         * @param {string} currency - Promotion price currency to purchase (gift card)
+         * @param {TaxEntity} tax - Promotion tax
+         * @param {string} promotion_type - Promotion type. Can be 'gift_card', 'discount'
+         * @param {string} discount_type - Discount type. Can be 'fixed_amount', 'percentage'
+         * @param {number} discount - Discount value (amount value or percentage value)
+         * @param {string} duration_type - Duration type for gift cards ('year', 'month', 'week', 'day')
+         * @param {number} duration - Duration length
+         * @param {string} client_type - Client type can be 'new' or 'all'
+         * @param {number} allow_usage_count - Limit of usage count
+         * @param {boolean} is_unlimited - Is unlimited
+         * @param {boolean} affect_services - Is it possible to apply this promotion to services?
+         * @param {boolean} affect_products - Is it possible to apply this promotion to products?
+         * @param {boolean} affect_paid_attributes - Is it possible to apply this promotion to paid attribute?
+         * @param {boolean} affect_memberships - Is it possible to apply this promotion to memberships?
+         * @param {boolean} affect_packages - Is it possible to apply this promotion to packages?
+         * @param {Array|number[]} service_restrictions - Array of service ids
+         * @param {Array|Promotion_BookingRestrictionEntity[]} booking_restrictions - Booking restrictions
+         * @param {Array|number[]} product_restrictions - Array of product ids
+         * @param {Array|number[]} paid_attribute_restrictions - Array of paid attributes ids
+         * @param {Array|number[]} memberships_restrictions - Array of memberships ids
+         * @param {Array|number[]} package_restrictions - Array of packages ids
          */
-        constructor(id, plan, status, start_date, end_date, price, billing_cycle, features) {
+        constructor(
+            id,
+            name,
+            description,
+            file_id = null,
+            picture_preview = null,
+            picture_large = null,
+            is_visible = true,
+            is_active = true,
+            position = 0,
+            price = 0,
+            currency = 'USD',
+            tax = null,
+            promotion_type,
+            discount_type = null,
+            discount = 0,
+            duration_type = null,
+            duration = 0,
+            client_type = 'all',
+            allow_usage_count = 1,
+            is_unlimited = false,
+            affect_services = false,
+            affect_products = false,
+            affect_paid_attributes = false,
+            affect_memberships = false,
+            affect_packages = false,
+            service_restrictions = [],
+            booking_restrictions = [],
+            product_restrictions = [],
+            paid_attribute_restrictions = [],
+            memberships_restrictions = [],
+            package_restrictions = []
+        ) {
             this.id = id;
-            this.plan = plan;
-            this.status = status;
+            this.name = name;
+            this.description = description;
+            this.file_id = file_id;
+            this.picture_preview = picture_preview;
+            this.picture_large = picture_large;
+            this.is_visible = is_visible;
+            this.is_active = is_active;
+            this.position = position;
+            this.price = price;
+            this.currency = currency;
+            this.tax = tax;
+            this.promotion_type = promotion_type;
+            this.discount_type = discount_type;
+            this.discount = discount;
+            this.duration_type = duration_type;
+            this.duration = duration;
+            this.client_type = client_type;
+            this.allow_usage_count = allow_usage_count;
+            this.is_unlimited = is_unlimited;
+            this.affect_services = affect_services;
+            this.affect_products = affect_products;
+            this.affect_paid_attributes = affect_paid_attributes;
+            this.affect_memberships = affect_memberships;
+            this.affect_packages = affect_packages;
+            this.service_restrictions = service_restrictions;
+            this.booking_restrictions = booking_restrictions;
+            this.product_restrictions = product_restrictions;
+            this.paid_attribute_restrictions = paid_attribute_restrictions;
+            this.memberships_restrictions = memberships_restrictions;
+            this.package_restrictions = package_restrictions;
+        }
+
+        /* ================== 基本状态检查 ================== */
+
+        /**
+         * 检查促销是否可用
+         * @returns {boolean}
+         */
+        isAvailable() {
+            return this.is_active && this.is_visible;
+        }
+
+        /**
+         * 检查是否为礼品卡类型
+         * @returns {boolean}
+         */
+        isGiftCard() {
+            return this.promotion_type === 'gift_card';
+        }
+
+        /**
+         * 检查是否为折扣类型
+         * @returns {boolean}
+         */
+        isDiscount() {
+            return this.promotion_type === 'discount';
+        }
+
+        /**
+         * 检查是否仅限新客户使用
+         * @returns {boolean}
+         */
+        isForNewClientsOnly() {
+            return this.client_type === 'new';
+        }
+
+        /* ================== 折扣计算逻辑 ================== */
+
+        /**
+         * 应用折扣到原始价格
+         * @param {number} originalPrice - 原始价格
+         * @returns {number} 折扣后的价格
+         */
+        applyDiscount(originalPrice) {
+            if (!this.isDiscount()) return originalPrice;
+
+            if (this.discount_type === 'fixed_amount') {
+                return Math.max(0, originalPrice - this.discount);
+            } else if (this.discount_type === 'percentage') {
+                return originalPrice * (1 - this.discount / 100);
+            }
+
+            return originalPrice;
+        }
+
+        /**
+         * 计算礼品卡价值（含税）
+         * @returns {number}
+         */
+        getGiftCardValue() {
+            if (!this.isGiftCard()) return 0;
+            return this.tax ? this.tax.calculateTotal(this.price) : this.price;
+        }
+
+        /**
+         * 获取促销类型标签
+         * @returns {string}
+         */
+        getPromotionTypeLabel() {
+            if (this.isGiftCard()) {
+                return `${this.currency} ${this.getGiftCardValue().toFixed(2)} 礼品卡`;
+            } else if (this.isDiscount()) {
+                if (this.discount_type === 'fixed_amount') {
+                    return `${this.currency} ${this.discount.toFixed(2)} 折扣`;
+                } else {
+                    return `${this.discount}% 折扣`;
+                }
+            }
+            return "未知促销类型";
+        }
+
+        /* ================== 适用性检查 ================== */
+
+        /**
+         * 检查促销是否适用于特定服务
+         * @param {number} serviceId - 服务ID
+         * @returns {boolean}
+         */
+        appliesToService(serviceId) {
+            if (!this.affect_services) return false;
+            return this.service_restrictions.length === 0 ||
+                this.service_restrictions.includes(serviceId);
+        }
+
+        /**
+         * 检查促销是否适用于特定产品
+         * @param {number} productId - 产品ID
+         * @returns {boolean}
+         */
+        appliesToProduct(productId) {
+            if (!this.affect_products) return false;
+            return this.product_restrictions.length === 0 ||
+                this.product_restrictions.includes(productId);
+        }
+
+        /**
+         * 检查促销是否适用于特定套餐
+         * @param {number} packageId - 套餐ID
+         * @returns {boolean}
+         */
+        appliesToPackage(packageId) {
+            if (!this.affect_packages) return false;
+            return this.package_restrictions.length === 0 ||
+                this.package_restrictions.includes(packageId);
+        }
+
+        /**
+         * 检查促销是否适用于特定客户类型
+         * @param {boolean} isNewClient - 是否为新客户
+         * @returns {boolean}
+         */
+        appliesToClient(isNewClient) {
+            if (this.isForNewClientsOnly()) {
+                return isNewClient;
+            }
+            return true;
+        }
+
+        /**
+         * 检查是否适用于特定日期时间
+         * @param {Date} dateTime - 要检查的日期时间
+         * @returns {boolean}
+         */
+        isValidForDateTime(dateTime) {
+            if (this.booking_restrictions.length === 0) return true;
+
+            return this.booking_restrictions.some(restriction =>
+                restriction.isValidForDateTime(dateTime)
+            );
+        }
+
+        /* ================== 礼品卡有效期管理 ================== */
+
+        /**
+         * 计算礼品卡过期日期
+         * @param {Date} [startDate=new Date()] - 起始日期
+         * @returns {Date|null}
+         */
+        calculateExpirationDate(startDate = new Date()) {
+            if (!this.isGiftCard() || !this.duration_type || this.duration <= 0) {
+                return null;
+            }
+
+            const result = new Date(startDate);
+
+            switch (this.duration_type) {
+                case 'day':
+                    result.setDate(result.getDate() + this.duration);
+                    break;
+                case 'week':
+                    result.setDate(result.getDate() + this.duration * 7);
+                    break;
+                case 'month':
+                    result.setMonth(result.getMonth() + this.duration);
+                    break;
+                case 'year':
+                    result.setFullYear(result.getFullYear() + this.duration);
+                    break;
+            }
+
+            return result;
+        }
+
+        /**
+         * 获取礼品卡有效期文本
+         * @returns {string}
+         */
+        getValidityPeriod() {
+            if (!this.isGiftCard()) return "不适用";
+
+            const durationText =
+                this.duration_type === 'day' ? '天' :
+                    this.duration_type === 'week' ? '周' :
+                        this.duration_type === 'month' ? '月' : '年';
+
+            return `${this.duration} ${durationText}`;
+        }
+
+        /* ================== 使用限制管理 ================== */
+
+        /**
+         * 检查是否还有可用次数
+         * @param {number} [currentUsage=0] - 当前已使用次数
+         * @returns {boolean}
+         */
+        hasRemainingUses(currentUsage = 0) {
+            return this.is_unlimited || currentUsage < this.allow_usage_count;
+        }
+
+        /**
+         * 获取剩余可用次数
+         * @param {number} [currentUsage=0] - 当前已使用次数
+         * @returns {number|string}
+         */
+        getRemainingUses(currentUsage = 0) {
+            return this.is_unlimited ? '无限' : Math.max(0, this.allow_usage_count - currentUsage);
+        }
+
+        /* ================== 图像处理方法 ================== */
+
+        /**
+         * 获取预览图片URL
+         * @param {string} [baseUrl=''] - 基础URL路径
+         * @returns {string}
+         */
+        getPreviewImageUrl(baseUrl = '') {
+            return this.picture_preview ? `${baseUrl}${this.picture_preview}` : '';
+        }
+
+        /**
+         * 获取大图URL
+         * @param {string} [baseUrl=''] - 基础URL路径
+         * @returns {string}
+         */
+        getLargeImageUrl(baseUrl = '') {
+            return this.picture_large ? `${baseUrl}${this.picture_large}` : '';
+        }
+
+        /**
+         * 检查是否有图片
+         * @returns {boolean}
+         */
+        hasImages() {
+            return !!this.picture_preview || !!this.picture_large;
+        }
+
+
+        /**
+         * 获取促销描述摘要
+         * @param {number} [maxLength=100] - 最大长度
+         * @returns {string}
+         */
+        getShortDescription(maxLength = 100) {
+            return this.description.length > maxLength
+                ? `${this.description.substring(0, maxLength)}...`
+                : this.description;
+        }
+
+        /**
+         * 检查是否影响任何产品/服务
+         * @returns {boolean}
+         */
+        affectsAnything() {
+            return this.affect_services ||
+                this.affect_products ||
+                this.affect_paid_attributes ||
+                this.affect_memberships ||
+                this.affect_packages;
+        }
+
+    }
+
+    class PromotionInstanceEntity {
+        /**
+         * Entity that contains promotion instance information
+         *
+         * @param {number} id - Promotion instance id. Auto-generated value.
+         * @param {PromotionEntity} promotion - Promotion information
+         * @param {string} start_date - Promotion instance start date (ISO 8601)
+         * @param {string} expired_date - Promotion instance expire date (ISO 8601)
+         * @param {boolean} is_used - Returns true if this promotion was used already
+         * @param {boolean} can_be_used - Returns true if this promotion can be used now
+         * @param {number} can_be_used_count - How many times left. -1 = unlimited uses
+         * @param {string} code - Promotion instance code
+         * @param {number} client_id - Client id
+         */
+        constructor(
+            id,
+            promotion,
+            start_date,
+            expired_date,
+            is_used,
+            can_be_used,
+            can_be_used_count,
+            code,
+            client_id
+        ) {
+            this.id = id;
+            this.promotion = promotion;
+            this.start_date = start_date;
+            this.expired_date = expired_date;
+            this.is_used = is_used;
+            this.can_be_used = can_be_used;
+            this.can_be_used_count = can_be_used_count;
+            this.code = code;
+            this.client_id = client_id;
+        }
+
+        /**
+         * Check if the promotion is currently active
+         * @returns {boolean}
+         */
+        isActive() {
+            const now = new Date();
+            const start = new Date(this.start_date);
+            const end = new Date(this.expired_date);
+            return now >= start && now <= end;
+        }
+
+        /**
+         * Check if the promotion has unlimited uses
+         * @returns {boolean}
+         */
+        isUnlimited() {
+            return this.can_be_used_count === -1;
+        }
+
+        /**
+         * Check if the promotion is expired
+         * @returns {boolean}
+         */
+        isExpired() {
+            return new Date() > new Date(this.expired_date);
+        }
+
+        /**
+         * Check if the promotion can be applied now
+         * @returns {boolean}
+         */
+        isApplicable() {
+            return this.can_be_used &&
+                this.isActive() &&
+                !this.is_used &&
+                (this.isUnlimited() || this.can_be_used_count > 0);
+        }
+
+        /**
+         * Get remaining usage count (returns Infinity for unlimited)
+         * @returns {number|Infinity}
+         */
+        getRemainingUses() {
+            return this.isUnlimited() ? Infinity : this.can_be_used_count;
+        }
+
+        /**
+         * Get time remaining until expiration (in milliseconds)
+         * @returns {number}
+         */
+        getTimeRemaining() {
+            return new Date(this.expired_date) - new Date();
+        }
+
+        /**
+         * Get formatted expiration time (e.g., "3 days left")
+         * @returns {string}
+         */
+        getFormattedTimeRemaining() {
+            const ms = this.getTimeRemaining();
+            if (ms <= 0) return "Expired";
+
+            const seconds = Math.floor(ms / 1000);
+            const minutes = Math.floor(seconds / 60);
+            const hours = Math.floor(minutes / 60);
+            const days = Math.floor(hours / 24);
+
+            if (days > 0) return `${days} day${days !== 1 ? 's' : ''} left`;
+            if (hours > 0) return `${hours} hour${hours !== 1 ? 's' : ''} left`;
+            if (minutes > 0) return `${minutes} minute${minutes !== 1 ? 's' : ''} left`;
+            return "Less than a minute left";
+        }
+
+        /**
+         * Mark the promotion as used (decrement usage count)
+         */
+        markAsUsed() {
+            if (this.is_used) return;
+
+            if (!this.isUnlimited()) {
+                this.can_be_used_count = Math.max(0, this.can_be_used_count - 1);
+            }
+
+            // Update usage status if count reaches zero
+            if (this.can_be_used_count === 0) {
+                this.is_used = true;
+                this.can_be_used = false;
+            }
+        }
+
+        /**
+         * Validate promotion code format
+         * @returns {boolean}
+         */
+        isValidCodeFormat() {
+            // Basic validation: 6-20 alphanumeric characters
+            return /^[a-zA-Z0-9]{6,20}$/.test(this.code);
+        }
+
+        /**
+         * Check if promotion is associated with a specific client
+         * @param {number} clientId - Client ID to check
+         * @returns {boolean}
+         */
+        isForClient(clientId) {
+            return this.client_id === clientId;
+        }
+    }
+
+    class Promotion_BookingRestrictionEntity {
+        /**
+         * Booking promotion restrictions info
+         *
+         * @param {number} id - Restriction id. Auto-generated value.
+         * @param {string} start_date - Start date when promotion affects booking (YYYY-MM-DD)
+         * @param {string} end_date - End date when promotion affects booking (YYYY-MM-DD)
+         * @param {string} start_time - Start time when promotion affects booking (HH:mm:ss)
+         * @param {string} end_time - End time when promotion affects booking (HH:mm:ss)
+         */
+        constructor(
+            id,
+            start_date,
+            end_date,
+            start_time,
+            end_time
+        ) {
+            this.id = id;
             this.start_date = start_date;
             this.end_date = end_date;
-            this.price = price;
-            this.billing_cycle = billing_cycle;
-            this.features = features;
+            this.start_time = start_time;
+            this.end_time = end_time;
+        }
+
+        /**
+         * 检查指定日期时间是否在限制范围内
+         * @param {Date} dateTime - 要检查的日期时间对象
+         * @returns {boolean}
+         */
+        isValidForDateTime(dateTime) {
+            const dateStr = dateTime.toISOString().split('T')[0];
+            const timeStr = dateTime.toTimeString().split(' ')[0];
+
+            // 检查日期范围
+            if (dateStr < this.start_date || dateStr > this.end_date) {
+                return false;
+            }
+
+            // 检查时间范围
+            return timeStr >= this.start_time && timeStr <= this.end_time;
+        }
+
+        /**
+         * 获取开始日期时间对象
+         * @returns {Date}
+         */
+        getStartDateTime() {
+            return new Date(`${this.start_date}T${this.start_time}`);
+        }
+
+        /**
+         * 获取结束日期时间对象
+         * @returns {Date}
+         */
+        getEndDateTime() {
+            return new Date(`${this.end_date}T${this.end_time}`);
+        }
+
+        /**
+         * 检查限制是否在当前时间有效
+         * @returns {boolean}
+         */
+        isCurrentlyActive() {
+            const now = new Date();
+            return this.isValidForDateTime(now);
+        }
+
+        /**
+         * 获取持续时间（毫秒）
+         * @returns {number}
+         */
+        getDurationMillis() {
+            return this.getEndDateTime() - this.getStartDateTime();
+        }
+
+        /**
+         * 获取格式化的日期范围
+         * @returns {string}
+         */
+        getFormattedDateRange() {
+            return `${this.start_date} 至 ${this.end_date}`;
+        }
+
+        /**
+         * 获取格式化的时间范围
+         * @returns {string}
+         */
+        getFormattedTimeRange() {
+            return `${this.start_time.substring(0, 5)} - ${this.end_time.substring(0, 5)}`;
         }
     }
 
-    class IntegrationEntity {
+    class TaxEntity {
         /**
-         * @param {number} id - Integration id
-         * @param {string} name - Integration name
-         * @param {string} type - Integration type
-         * @param {Object} config - Integration configuration
-         * @param {boolean} is_active - Active status
-         * @param {string} last_sync - Last sync datetime
-         * @param {Object} sync_status - Sync status details
+         * Entity that contains tax information
+         *
+         * @param {number} id - Tax id. Auto-generated value.
+         * @param {string} name - Tax name
+         * @param {number} ratio - Tax ratio (e.g., 0.15 for 15%)
+         * @param {boolean} is_default - Is default tax
          */
-        constructor(id, name, type, config, is_active, last_sync, sync_status) {
+        constructor(
+            id,
+            name,
+            ratio,
+            is_default = false
+        ) {
             this.id = id;
             this.name = name;
-            this.type = type;
-            this.config = config;
-            this.is_active = is_active;
-            this.last_sync = last_sync;
-            this.sync_status = sync_status;
+            this.ratio = ratio;
+            this.is_default = is_default;
         }
-    }
 
-    class WebhookEntity {
         /**
-         * @param {number} id - Webhook id
-         * @param {string} url - Webhook URL
-         * @param {string[]} events - Subscribed events
-         * @param {boolean} is_active - Active status
-         * @param {Object} headers - Custom headers
-         * @param {string} secret - Webhook secret
-         * @param {Object} last_delivery - Last delivery details
+         * 计算税额
+         * @param {number} amount - 税前金额
+         * @returns {number}
          */
-        constructor(id, url, events, is_active, headers, secret, last_delivery) {
-            this.id = id;
-            this.url = url;
-            this.events = events;
-            this.is_active = is_active;
-            this.headers = headers;
-            this.secret = secret;
-            this.last_delivery = last_delivery;
+        calculateTax(amount) {
+            return amount * this.ratio;
+        }
+
+        /**
+         * 计算含税总额
+         * @param {number} amount - 税前金额
+         * @returns {number}
+         */
+        calculateTotal(amount) {
+            return amount * (1 + this.ratio);
+        }
+
+        /**
+         * 获取税率百分比
+         * @returns {string}
+         */
+        getPercentage() {
+            return `${(this.ratio * 100).toFixed(2)}%`;
+        }
+
+        /**
+         * 检查是否为默认税
+         * @returns {boolean}
+         */
+        isDefault() {
+            return this.is_default;
         }
     }
 
     class PackageEntity {
         /**
-         * @param {number} id - Package id
+         * Entity that contains package information
+         *
+         * @param {number} id - Package id. Auto-generated value.
          * @param {string} name - Package name
          * @param {string} description - Package description
+         * @param {number} position - Package position
+         * @param {number} file_id - Image file id
+         * @param {string} picture - Picture file name
+         * @param {string} picture_path - Picture path
+         * @param {string} picture_preview - Path to preview picture
+         * @param {string} picture_large - Path to large picture
          * @param {number} price - Package price
-         * @param {number[]} service_ids - Included service ids
-         * @param {number} validity_days - Validity period in days
-         * @param {boolean} is_active - Active status
-         * @param {Object} settings - Package settings
+         * @param {string} currency - Package price currency
+         * @param {number} tax_id - Tax id
+         * @param {TaxEntity} tax - Tax information
+         * @param {number} duration - Package duration
+         * @param {string} duration_type - Package duration type
+         * @param {number} sales_limit - Package sales limit
+         * @param {number} sold - Sold packages count
+         * @param {boolean} can_be_purchased - If client can purchase this package
+         * @param {boolean} is_active - Is package active
+         * @param {boolean} is_visible - Is package visible on public site
+         * @param {Array|Package_PackageServiceEntity[]} services - Array of connected services
+         * @param {Array|Package_PackageProductEntity[]} products - Array of connected products
+         * @param {Array|Package_PackageProductEntity[]} paid_attributes - Array of connected paid attributes
+         * @param {boolean} has_instances - If package has generated instances already
+         * @param {boolean} is_use_package_limit - Is use package limit
+         * @param {number} package_limit - Package limit
          */
-        constructor(id, name, description, price, service_ids, validity_days, is_active, settings) {
+        constructor(
+            id,
+            name,
+            description,
+            position,
+            file_id,
+            picture,
+            picture_path,
+            picture_preview,
+            picture_large,
+            price,
+            currency,
+            tax_id,
+            tax,
+            duration,
+            duration_type,
+            sales_limit,
+            sold,
+            can_be_purchased,
+            is_active,
+            is_visible,
+            services,
+            products,
+            paid_attributes,
+            has_instances,
+            is_use_package_limit,
+            package_limit
+        ) {
             this.id = id;
             this.name = name;
             this.description = description;
+            this.position = position;
+            this.file_id = file_id;
+            this.picture = picture;
+            this.picture_path = picture_path;
+            this.picture_preview = picture_preview;
+            this.picture_large = picture_large;
             this.price = price;
-            this.service_ids = service_ids;
-            this.validity_days = validity_days;
+            this.currency = currency;
+            this.tax_id = tax_id;
+            this.tax = tax;
+            this.duration = duration;
+            this.duration_type = duration_type;
+            this.sales_limit = sales_limit;
+            this.sold = sold;
+            this.can_be_purchased = can_be_purchased;
             this.is_active = is_active;
-            this.settings = settings;
+            this.is_visible = is_visible;
+            this.services = services;
+            this.products = products;
+            this.paid_attributes = paid_attributes;
+            this.has_instances = has_instances;
+            this.is_use_package_limit = is_use_package_limit;
+            this.package_limit = package_limit;
+        }
+
+        /**
+         * Check if the package is available for purchase
+         * @returns {boolean}
+         */
+        isAvailable() {
+            return this.can_be_purchased &&
+                this.is_active &&
+                this.is_visible &&
+                (this.sales_limit === 0 || this.sold < this.sales_limit);
+        }
+
+        /**
+         * Get the remaining available quantity
+         * @returns {number}
+         */
+        getRemainingQuantity() {
+            if (this.sales_limit === 0) return Infinity;
+            return Math.max(0, this.sales_limit - this.sold);
+        }
+
+        /**
+         * Get the total duration in minutes
+         * @returns {number}
+         */
+        getTotalDurationMinutes() {
+            switch (this.duration_type) {
+                case 'minutes': return this.duration;
+                case 'hours': return this.duration * 60;
+                case 'days': return this.duration * 24 * 60;
+                default: return this.duration;
+            }
+        }
+
+        /**
+         * Get the price including tax
+         * @returns {number}
+         */
+        getPriceWithTax() {
+            if (!this.tax) return this.price;
+            return this.price * (1 + this.tax.rate / 100);
+        }
+
+        /**
+         * Get the formatted price with currency
+         * @param {boolean} includeTax - Include tax in the price
+         * @returns {string}
+         */
+        getFormattedPrice(includeTax = true) {
+            const price = includeTax ? this.getPriceWithTax() : this.price;
+            return `${price.toFixed(2)} ${this.currency}`;
+        }
+
+        /**
+         * Check if the package has any services
+         * @returns {boolean}
+         */
+        hasServices() {
+            return this.services && this.services.length > 0;
+        }
+
+        /**
+         * Check if the package has any products
+         * @returns {boolean}
+         */
+        hasProducts() {
+            return this.products && this.products.length > 0;
+        }
+
+        /**
+         * Check if the package has any paid attributes
+         * @returns {boolean}
+         */
+        hasPaidAttributes() {
+            return this.paid_attributes && this.paid_attributes.length > 0;
+        }
+
+        /**
+         * Get the full URL for the preview picture
+         * @returns {string}
+         */
+        getPreviewPictureUrl() {
+            return this.picture_path && this.picture_preview
+                ? `${this.picture_path}/${this.picture_preview}`
+                : '';
+        }
+
+        /**
+         * Get the full URL for the large picture
+         * @returns {string}
+         */
+        getLargePictureUrl() {
+            return this.picture_path && this.picture_large
+                ? `${this.picture_path}/${this.picture_large}`
+                : '';
+        }
+
+        /**
+         * Check if the package has reached its limit
+         * @returns {boolean}
+         */
+        hasReachedLimit() {
+            return this.is_use_package_limit &&
+                this.package_limit > 0 &&
+                this.sold >= this.package_limit;
+        }
+
+        /**
+         * Get the total value of all included services
+         * @returns {number}
+         */
+        getServicesValue() {
+            if (!this.hasServices()) return 0;
+            return this.services.reduce((sum, service) => sum + (service.price || 0), 0);
+        }
+
+        /**
+         * Get the total value of all included products
+         * @returns {number}
+         */
+        getProductsValue() {
+            if (!this.hasProducts()) return 0;
+            return this.products.reduce((sum, product) => sum + (product.price * product.quantity || 0), 0);
+        }
+
+        /**
+         * Get the total value of all included paid attributes
+         * @returns {number}
+         */
+        getPaidAttributesValue() {
+            if (!this.hasPaidAttributes()) return 0;
+            return this.paid_attributes.reduce((sum, attr) => sum + (attr.price * attr.quantity || 0), 0);
+        }
+
+        /**
+         * Calculate the total value of all package components
+         * @returns {number}
+         */
+        getTotalValue() {
+            return this.getServicesValue() + this.getProductsValue() + this.getPaidAttributesValue();
+        }
+
+        /**
+         * Calculate the savings percentage compared to individual purchases
+         * @returns {number}
+         */
+        getSavingsPercentage() {
+            const totalValue = this.getTotalValue();
+            if (totalValue <= this.price) return 0;
+            return Math.round((1 - this.price / totalValue) * 100);
+        }
+
+        /**
+         * Check if the package has any images
+         * @returns {boolean}
+         */
+        hasImages() {
+            return !!this.picture ||
+                !!this.picture_preview ||
+                !!this.picture_large;
+        }
+
+        /**
+         * Get the main service in the package (if any)
+         * @returns {Package_PackageServiceEntity|null}
+         */
+        getPrimaryService() {
+            return this.services.length > 0 ? this.services[0] : null;
         }
     }
 
-    class ClientGroupEntity {
-        /**
-         * @param {number} id - Group id
-         * @param {string} name - Group name
-         * @param {string} description - Group description
-         * @param {number[]} client_ids - Member client ids
-         * @param {Object} settings - Group settings
-         * @param {boolean} is_active - Active status
-         */
-        constructor(id, name, description, client_ids, settings, is_active) {
-            this.id = id;
-            this.name = name;
-            this.description = description;
-            this.client_ids = client_ids;
-            this.settings = settings;
-            this.is_active = is_active;
-        }
-    }
 
-    class ServiceOptionEntity {
-        /**
-         * @param {number} id - Option id
-         * @param {number} service_id - Service id
-         * @param {string} name - Option name
-         * @param {string} type - Option type
-         * @param {number} price_modifier - Price modification
-         * @param {number} duration_modifier - Duration modification
-         * @param {boolean} is_required - Required status
-         * @param {Object} settings - Option settings
-         */
-        constructor(id, service_id, name, type, price_modifier, duration_modifier, is_required, settings) {
-            this.id = id;
-            this.service_id = service_id;
-            this.name = name;
-            this.type = type;
-            this.price_modifier = price_modifier;
-            this.duration_modifier = duration_modifier;
-            this.is_required = is_required;
-            this.settings = settings;
-        }
-    }
 
-    class WaitingListEntity {
-        /**
-         * @param {number} id - Entry id
-         * @param {number} client_id - Client id
-         * @param {number} service_id - Service id
-         * @param {string} preferred_date - Preferred date
-         * @param {string} status - Status
-         * @param {string} notes - Additional notes
-         * @param {string} created_datetime - Creation datetime
-         */
-        constructor(id, client_id, service_id, preferred_date, status, notes, created_datetime) {
-            this.id = id;
-            this.client_id = client_id;
-            this.service_id = service_id;
-            this.preferred_date = preferred_date;
-            this.status = status;
-            this.notes = notes;
-            this.created_datetime = created_datetime;
-        }
-    }
 
-    class GiftCardEntity {
-        /**
-         * @param {number} id - Gift card id
-         * @param {string} code - Gift card code
-         * @param {number} initial_value - Initial value
-         * @param {number} current_balance - Current balance
-         * @param {string} expiry_date - Expiry date
-         * @param {boolean} is_active - Active status
-         * @param {number} recipient_id - Recipient client id
-         * @param {Object} usage_history - Usage history
-         */
-        constructor(id, code, initial_value, current_balance, expiry_date, is_active, recipient_id, usage_history) {
-            this.id = id;
-            this.code = code;
-            this.initial_value = initial_value;
-            this.current_balance = current_balance;
-            this.expiry_date = expiry_date;
-            this.is_active = is_active;
-            this.recipient_id = recipient_id;
-            this.usage_history = usage_history;
-        }
-    }
 
-    class EmailTemplateEntity {
-        /**
-         * @param {number} id - Template id
-         * @param {string} name - Template name
-         * @param {string} subject - Email subject
-         * @param {string} body - Email body
-         * @param {string} trigger - Trigger event
-         * @param {Object} variables - Available variables
-         * @param {boolean} is_active - Active status
-         * @param {Object} settings - Template settings
-         */
-        constructor(id, name, subject, body, trigger, variables, is_active, settings) {
-            this.id = id;
-            this.name = name;
-            this.subject = subject;
-            this.body = body;
-            this.trigger = trigger;
-            this.variables = variables;
-            this.is_active = is_active;
-            this.settings = settings;
-        }
-    }
 
-    class BlockedTimeEntity {
-        /**
-         * @param {number} id - Blocked time id
-         * @param {string} start_datetime - Start datetime
-         * @param {string} end_datetime - End datetime
-         * @param {number} provider_id - Provider id
-         * @param {string} reason - Blocking reason
-         * @param {boolean} is_recurring - Recurring status
-         * @param {Object} recurrence_rule - Recurrence settings
-         * @param {Object} settings - Block settings
-         */
-        constructor(id, start_datetime, end_datetime, provider_id, reason, is_recurring, recurrence_rule, settings) {
-            this.id = id;
-            this.start_datetime = start_datetime;
-            this.end_datetime = end_datetime;
-            this.provider_id = provider_id;
-            this.reason = reason;
-            this.is_recurring = is_recurring;
-            this.recurrence_rule = recurrence_rule;
-            this.settings = settings;
-        }
-    }
 
-    class CommunicationLogEntity {
-        /**
-         * @param {number} id - Log id
-         * @param {string} type - Communication type (email/sms)
-         * @param {number} client_id - Client id
-         * @param {string} subject - Message subject
-         * @param {string} content - Message content
-         * @param {string} status - Delivery status
-         * @param {string} sent_datetime - Sent datetime
-         * @param {Object} metadata - Additional metadata
-         */
-        constructor(id, type, client_id, subject, content, status, sent_datetime, metadata) {
-            this.id = id;
-            this.type = type;
-            this.client_id = client_id;
-            this.subject = subject;
-            this.content = content;
-            this.status = status;
-            this.sent_datetime = sent_datetime;
-            this.metadata = metadata;
-        }
-    }
 
-    class ReminderEntity {
-        /**
-         * @param {number} id - Reminder id
-         * @param {string} type - Reminder type
-         * @param {number} booking_id - Related booking id
-         * @param {string} send_datetime - Scheduled send time
-         * @param {string} status - Reminder status
-         * @param {Object} template - Message template
-         * @param {Object} settings - Reminder settings
-         */
-        constructor(id, type, booking_id, send_datetime, status, template, settings) {
-            this.id = id;
-            this.type = type;
-            this.booking_id = booking_id;
-            this.send_datetime = send_datetime;
-            this.status = status;
-            this.template = template;
-            this.settings = settings;
-        }
-    }
 
-    class PromotionEntity {
-        /**
-         * @param {number} id - Promotion id
-         * @param {string} name - Promotion name
-         * @param {string} description - Promotion description
-         * @param {string} start_date - Start date
-         * @param {string} end_date - End date
-         * @param {Object} conditions - Promotion conditions
-         * @param {Object} rewards - Promotion rewards
-         * @param {boolean} is_active - Active status
-         */
-        constructor(id, name, description, start_date, end_date, conditions, rewards, is_active) {
-            this.id = id;
-            this.name = name;
-            this.description = description;
-            this.start_date = start_date;
-            this.end_date = end_date;
-            this.conditions = conditions;
-            this.rewards = rewards;
-            this.is_active = is_active;
-        }
-    }
 
-    class TaxRateEntity {
-        /**
-         * @param {number} id - Tax rate id
-         * @param {string} name - Tax rate name
-         * @param {number} rate - Tax rate percentage
-         * @param {string} country - Country code
-         * @param {string} region - Region/state code
-         * @param {boolean} is_default - Default status
-         * @param {Object} settings - Tax settings
-         */
-        constructor(id, name, rate, country, region, is_default, settings) {
-            this.id = id;
-            this.name = name;
-            this.rate = rate;
-            this.country = country;
-            this.region = region;
-            this.is_default = is_default;
-            this.settings = settings;
-        }
-    }
 
-    class FormEntity {
-        /**
-         * @param {number} id - Form id
-         * @param {string} name - Form name
-         * @param {string} type - Form type
-         * @param {Object[]} fields - Form fields
-         * @param {Object} validation_rules - Validation rules
-         * @param {boolean} is_active - Active status
-         * @param {Object} settings - Form settings
-         */
-        constructor(id, name, type, fields, validation_rules, is_active, settings) {
-            this.id = id;
-            this.name = name;
-            this.type = type;
-            this.fields = fields;
-            this.validation_rules = validation_rules;
-            this.is_active = is_active;
-            this.settings = settings;
-        }
-    }
-
-    class WorkflowEntity {
-        /**
-         * @param {number} id - Workflow id
-         * @param {string} name - Workflow name
-         * @param {string} trigger_event - Trigger event
-         * @param {Object[]} conditions - Workflow conditions
-         * @param {Object[]} actions - Workflow actions
-         * @param {boolean} is_active - Active status
-         * @param {Object} settings - Workflow settings
-         */
-        constructor(id, name, trigger_event, conditions, actions, is_active, settings) {
-            this.id = id;
-            this.name = name;
-            this.trigger_event = trigger_event;
-            this.conditions = conditions;
-            this.actions = actions;
-            this.is_active = is_active;
-            this.settings = settings;
-        }
-    }
-
-    class ServiceProviderEntity {
-        /**
-         * @param {number} id - Provider id
-         * @param {string} name - Provider name
-         * @param {string} email - Provider email
-         * @param {string} phone - Provider phone
-         * @param {number[]} service_ids - Assigned service ids
-         * @param {number[]} location_ids - Assigned location ids
-         * @param {Object} schedule - Work schedule
-         * @param {boolean} is_active - Active status
-         * @param {Object} settings - Provider settings
-         */
-        constructor(id, name, email, phone, service_ids, location_ids, schedule, is_active, settings) {
-            this.id = id;
-            this.name = name;
-            this.email = email;
-            this.phone = phone;
-            this.service_ids = service_ids;
-            this.location_ids = location_ids;
-            this.schedule = schedule;
-            this.is_active = is_active;
-            this.settings = settings;
-        }
-    }
-
-    class InventoryEntity {
-        /**
-         * @param {number} id - Inventory record id
-         * @param {number} product_id - Product id
-         * @param {string} action - Action type (in/out)
-         * @param {number} quantity - Quantity changed
-         * @param {string} reason - Reason for change
-         * @param {number} booking_id - Related booking id
-         * @param {string} created_datetime - Creation datetime
-         */
-        constructor(id, product_id, action, quantity, reason, booking_id, created_datetime) {
-            this.id = id;
-            this.product_id = product_id;
-            this.action = action;
-            this.quantity = quantity;
-            this.reason = reason;
-            this.booking_id = booking_id;
-            this.created_datetime = created_datetime;
-        }
-    }
-
-    class MembershipPlanEntity {
-        /**
-         * @param {number} id - Plan id
-         * @param {string} name - Plan name
-         * @param {string} description - Plan description
-         * @param {number} price - Plan price
-         * @param {number} duration_days - Duration in days
-         * @param {Object} benefits - Plan benefits
-         * @param {Object} restrictions - Plan restrictions
-         * @param {boolean} is_active - Active status
-         */
-        constructor(id, name, description, price, duration_days, benefits, restrictions, is_active) {
-            this.id = id;
-            this.name = name;
-            this.description = description;
-            this.price = price;
-            this.duration_days = duration_days;
-            this.benefits = benefits;
-            this.restrictions = restrictions;
-            this.is_active = is_active;
-        }
-    }
-
-    class WaiverEntity {
-        /**
-         * @param {number} id - Waiver id
-         * @param {string} title - Waiver title
-         * @param {string} content - Waiver content
-         * @param {number[]} service_ids - Required for services
-         * @param {boolean} require_signature - Signature requirement
-         * @param {Object} settings - Waiver settings
-         * @param {boolean} is_active - Active status
-         */
-        constructor(id, title, content, service_ids, require_signature, settings, is_active) {
-            this.id = id;
-            this.title = title;
-            this.content = content;
-            this.service_ids = service_ids;
-            this.require_signature = require_signature;
-            this.settings = settings;
-            this.is_active = is_active;
-        }
-    }
-
-    class MarketingCampaignEntity {
-        /**
-         * @param {number} id - Campaign id
-         * @param {string} name - Campaign name
-         * @param {string} type - Campaign type
-         * @param {string} status - Campaign status
-         * @param {Object} settings - Campaign settings
-         * @param {Object} statistics - Campaign statistics
-         * @param {string} start_date - Start date
-         * @param {string} end_date - End date
-         */
-        constructor(id, name, type, status, settings, statistics, start_date, end_date) {
-            this.id = id;
-            this.name = name;
-            this.type = type;
-            this.status = status;
-            this.settings = settings;
-            this.statistics = statistics;
-            this.start_date = start_date;
-            this.end_date = end_date;
-        }
-    }
-
-    class FeedbackFormEntity {
-        /**
-         * @param {number} id - Form id
-         * @param {string} name - Form name
-         * @param {Object[]} questions - Form questions
-         * @param {number[]} service_ids - Associated services
-         * @param {boolean} auto_send - Auto send status
-         * @param {Object} settings - Form settings
-         * @param {boolean} is_active - Active status
-         */
-        constructor(id, name, questions, service_ids, auto_send, settings, is_active) {
-            this.id = id;
-            this.name = name;
-            this.questions = questions;
-            this.service_ids = service_ids;
-            this.auto_send = auto_send;
-            this.settings = settings;
-            this.is_active = is_active;
-        }
-    }
-
-    class ReferralEntity {
-        /**
-         * @param {number} id - Referral id
-         * @param {number} referrer_id - Referrer client id
-         * @param {number} referred_id - Referred client id
-         * @param {string} status - Referral status
-         * @param {Object} rewards - Reward details
-         * @param {string} created_datetime - Creation datetime
-         */
-        constructor(id, referrer_id, referred_id, status, rewards, created_datetime) {
-            this.id = id;
-            this.referrer_id = referrer_id;
-            this.referred_id = referred_id;
-            this.status = status;
-            this.rewards = rewards;
-            this.created_datetime = created_datetime;
-        }
-    }
-    console.log(AdminClient.default().getBookingDetails('3mbs3ej9k'));
+    // AdminClient.default().getBookingDetails('3mbs3ej9k').then(response => {
+    //     console.log(response);
+    // });
+    // AdminClient.default().getInvoice('3mbs3ej9k').then(response => {
+    //     console.log(response);
+    // });
+    AdminClient.default().getBookingByCode('3mbs3ej9k').then(async response => {
+        let details = await AdminClient.default().getBookingDetails(response.id);
+        console.log(response);
+        console.log(details);
+        console.log(await AdminClient.default().getInvoice(response.invoice_id));
+    });
 })();

@@ -13,6 +13,7 @@
 // @icon         https://simplybook.me/favicon.ico
 // @connect      user-api-v2.simplybook.me
 // @run-at       document-end
+// @require      https://raw.githubusercontent.com/beachspainc/SimplyBookEnhancement/refs/heads/main/scripts/core/credentials.js
 // ==/UserScript==
 (function() {
     'use strict';

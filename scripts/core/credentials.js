@@ -9,7 +9,6 @@
 // @run-at       document-start
 // @require      https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js
 // ==/UserScript==
-
 (function() {
     'use strict';
 

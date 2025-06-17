@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimplyBook.me Payment Enhancement
 // @namespace    http://tampermonkey.net/
-// @version      7.3
+// @version      8.6
 // @description  Enhanced with event data capture, display, and tip tag feature
 // @author       Your Name
 // @match        https://*.simplybook.me/*
@@ -29,67 +29,46 @@
     };
 
     class Component {
-        #root_element;
+        #element;
         #config;
         #event_listeners;
-        #is_mounted;
         #data;
-        #container_element;
+        #parent_element;
+        #custom_event_handlers = {};
 
         constructor(options) {
             this.#config = {
-                container: 'body',
+                parent: 'body',
                 enable_css_scoping: true,
                 initial_data: {},
                 ...options
             };
 
-            this.#root_element = null;
-            this.#container_element = null;
+            this.#element = null;
+            this.#parent_element = null;
             this.#event_listeners = {};
-            this.#is_mounted = false;
             this.#data = { ...this.#config.initial_data };
         }
 
-        get root_element() {
-            return this.#root_element;
-        }
-
-        get is_mounted() {
-            return this.#is_mounted;
-        }
-
-        get config() {
-            return this.#config;
-        }
-
-        get data() {
-            return {...this.#data};
-        }
+        get element() { return this.#element; }
+        get is_loaded() { return !!this.#element; }
+        get config() { return this.#config; }
+        get data() { return {...this.#data}; }
+        get is_mounted() { return this.#element?.parentNode && document.body.contains(this.#element); }
 
         async load() {
+            if (this.is_loaded) return true;
+
             try {
-                // 处理不同的初始化方式
-                if (this.#config.root_element) {
-                    this.#root_element = this.#config.root_element;
-                }
-                else if (this.#config.html) {
-                    this.#create_from_html(this.#config.html);
-                }
+                if (this.#config.element) this.#element = this.#config.element;
+                else if (this.#config.html) this.#create_from_html(this.#config.html);
                 else if (this.#config.url) {
                     const html = await this.#fetch_component(this.#config.url);
                     this.#create_from_html(html);
                 }
-                else {
-                    console.error('Component requires either root_element, html, or url');
-                    return false;
-                }
+                else throw new Error('Component requires element, html, or url');
 
-                // 处理样式
-                if (this.#config.enable_css_scoping) {
-                    this.#scope_css();
-                }
-
+                if (this.#config.enable_css_scoping) this.#scope_css();
                 return true;
             } catch (error) {
                 console.error('Component load error:', error);
@@ -99,14 +78,11 @@
 
         #create_from_html(html) {
             const doc = new DOMParser().parseFromString(html, 'text/html');
-            this.#root_element = this.#config.root_selector
+            this.#element = this.#config.root_selector
                 ? doc.querySelector(this.#config.root_selector)
                 : doc.body.firstElementChild;
 
-            if (!this.#root_element) {
-                throw new Error('Root element not found');
-            }
-
+            if (!this.#element) throw new Error('Component element not found');
             this.#process_style_tags(doc);
         }
 
@@ -117,125 +93,83 @@
                 newStyle.textContent = style.textContent;
                 fragment.appendChild(newStyle);
             });
-
-            if (this.#root_element) {
-                this.#root_element.appendChild(fragment);
-            }
+            this.#element?.appendChild(fragment);
         }
 
         async mount() {
-            if (this.#is_mounted) {
+            if (this.is_mounted) {
                 console.warn('Component is already mounted');
                 return true;
             }
 
-            // 确保已加载
-            if (!this.#root_element) {
-                console.error('Cannot mount: Component not loaded');
+            if (!this.is_loaded) throw new Error('Component must be loaded before mounting');
+
+            this.#parent_element = typeof this.#config.parent === 'string'
+                ? document.querySelector(this.#config.parent)
+                : this.#config.parent;
+
+            if (!this.#parent_element) {
+                console.error('Parent element not found');
                 return false;
             }
 
-            // 查找容器元素
-            this.#container_element = document.querySelector(this.#config.container);
-            if (!this.#container_element) {
-                console.error('Container element not found');
-                return false;
-            }
-
-            // 初始化事件监听器
             this.#init_event_listeners();
-
-            // 渲染组件
             this.render();
-
-            this.#is_mounted = true;
-            console.log('Component mounted successfully');
+            this.#parent_element.appendChild(this.#element);
             return true;
         }
 
         async unmount() {
-            if (!this.#is_mounted) {
-                console.warn('Component is not mounted');
+            if (!this.is_mounted) {
+                console.warn('Component not mounted');
                 return false;
             }
 
-            // 移除事件监听器
             this.#remove_event_listeners();
-
-            // 从DOM中移除
-            if (this.#root_element.parentNode) {
-                this.#root_element.parentNode.removeChild(this.#root_element);
-            }
-
-            this.#is_mounted = false;
-            console.log('Component unmounted successfully');
+            this.#element.parentNode?.removeChild(this.#element);
             return true;
         }
 
         #init_event_listeners() {
-            if (!this.#root_element) return;
+            if (!this.#element) return;
 
-            // 绑定基础事件
-            const eventsToBind = ['click', 'change', 'input', 'submit'];
-            eventsToBind.forEach(event => {
-                if (typeof this[`_on_${event}`] === 'function') {
-                    this.#root_element.addEventListener(event, e => this[`_on_${event}`](e));
-                }
-            });
+            const bindEvent = (event, handler) => this.#element.addEventListener(event, handler);
 
-            // 绑定自定义事件监听器
             Object.entries(this.#event_listeners).forEach(([event, listeners]) => {
-                listeners.forEach(({selector, handler}) => {
-                    if (selector === 'root') {
-                        this.#root_element.addEventListener(event, handler);
-                    } else if (selector) {
-                        this.#root_element.addEventListener(event, e => {
-                            if (e.target.matches(selector)) handler.call(e.target, e);
-                        });
-                    }
+                listeners.forEach(({ selector, handler }) => {
+                    if (selector === 'root') bindEvent(event, handler);
+                    else if (selector) bindEvent(event, e => e.target.matches(selector) && handler.call(e.target, e));
                 });
             });
+
+            Object.entries(this.#custom_event_handlers).forEach(([event, handler]) => bindEvent(event, handler));
         }
 
         #remove_event_listeners() {
-            if (!this.#root_element) return;
+            if (!this.#element) return;
 
-            // 解绑基础事件
-            const eventsToUnbind = ['click', 'change', 'input', 'submit'];
-            eventsToUnbind.forEach(event => {
-                if (typeof this[`_on_${event}`] === 'function') {
-                    this.#root_element.removeEventListener(event, e => this[`_on_${event}`](e));
-                }
-            });
+            const unbindEvent = (event, handler) => this.#element.removeEventListener(event, handler);
 
-            // 解绑自定义事件监听器
             Object.entries(this.#event_listeners).forEach(([event, listeners]) => {
-                listeners.forEach(({selector, handler}) => {
-                    if (selector === 'root') {
-                        this.#root_element.removeEventListener(event, handler);
-                    } else if (selector) {
-                        this.#root_element.removeEventListener(event, handler);
-                    }
-                });
+                listeners.forEach(({ selector, handler }) => selector && unbindEvent(event, handler));
             });
+
+            Object.entries(this.#custom_event_handlers).forEach(([event, handler]) => unbindEvent(event, handler));
         }
 
-        on(event, selector, handler) {
-            this.#event_listeners[event] ||= [];
-            this.#event_listeners[event].push({selector, handler});
+        addEventHandler(event, handler) {
+            this.#custom_event_handlers[event] = handler;
+            if (this.is_mounted) this.#element.addEventListener(event, handler);
         }
 
         #scope_css() {
-            if (!this.#root_element) return;
+            if (!this.#element) return;
 
             const scope_id = `component_${Math.random().toString(36).slice(2, 11)}`;
-            this.#root_element.id = scope_id;
+            this.#element.id = scope_id;
 
-            this.#root_element.querySelectorAll('style').forEach(style => {
-                style.textContent = style.textContent.replace(
-                    /(^|\})([^{]+?\{)/g,
-                    `$1#${scope_id} $2`
-                );
+            this.#element.querySelectorAll('style').forEach(style => {
+                style.textContent = style.textContent.replace(/(^|\})([^{]+?\{)/g, `$1#${scope_id} $2`);
             });
         }
 
@@ -244,9 +178,7 @@
                 GM_xmlhttpRequest({
                     method: 'GET',
                     url,
-                    onload: r => r.status >= 200 && r.status < 300
-                        ? resolve(r.responseText)
-                        : reject(r.status),
+                    onload: r => r.status >= 200 && r.status < 300 ? resolve(r.responseText) : reject(r.status),
                     onerror: reject
                 });
             });
@@ -254,14 +186,15 @@
 
         update_data(new_data) {
             this.#data = { ...this.#data, ...new_data };
-            if (this.#is_mounted) this.render();
+            if (this.is_mounted) this.render();
             return this;
         }
 
         destroy() {
             this.unmount();
             this.#event_listeners = {};
-            this.#root_element = null;
+            this.#custom_event_handlers = {};
+            this.#element = null;
         }
 
         render() {}
@@ -272,25 +205,16 @@
         #loading_overlay;
 
         constructor(options) {
-            // 确保传递 initial_state
-            const completeOptions = {
+            super({
                 initial_state: { is_loading: false, has_error: false, error_message: '' },
                 ...options
-            };
-
-            super({
-                loading_animation: true,
-                ...completeOptions
             });
-
-            this.#state = { ...completeOptions.initial_state };
+            this.#state = { ...this.config.initial_state };
             this.#loading_overlay = null;
             this.#init_loading_styles();
         }
 
-        get state() {
-            return {...this.#state};
-        }
+        get state() { return {...this.#state}; }
 
         #init_loading_styles() {
             if (document.getElementById('stateful-loading-styles')) return;
@@ -299,48 +223,31 @@
             style.id = 'stateful-loading-styles';
             style.textContent = `
                 .stateful-loading-overlay {
-                    position: absolute;
-                    top: 0; left: 0;
+                    position: absolute; top: 0; left: 0;
                     width: 100%; height: 100%;
                     background: rgba(255, 255, 255, 0.7);
-                    display: flex;
-                    justify-content: center;
-                    align-items: center;
-                    z-index: 1000;
-                    border-radius: inherit;
-                    opacity: 0;
-                    transition: opacity 0.3s ease;
-                    pointer-events: none;
+                    display: flex; justify-content: center; align-items: center;
+                    z-index: 1000; border-radius: inherit;
+                    opacity: 0; transition: opacity 0.3s ease; pointer-events: none;
                 }
-                .stateful-loading-overlay.active {
-                    opacity: 1;
-                    pointer-events: auto;
-                }
+                .stateful-loading-overlay.active { opacity: 1; pointer-events: auto; }
                 .stateful-loading-spinner {
-                    width: 20px; height: 20px;
-                    position: relative;
+                    width: 20px; height: 20px; position: relative;
                 }
-                .stateful-loading-spinner::before,
-                .stateful-loading-spinner::after {
-                    content: '';
-                    position: absolute;
-                    top: 0; left: 0;
-                    width: 100%; height: 100%;
-                    border-radius: 50%;
+                .stateful-loading-spinner::before, .stateful-loading-spinner::after {
+                    content: ''; position: absolute; top: 0; left: 0;
+                    width: 100%; height: 100%; border-radius: 50%;
                     border: 2px solid transparent;
                     animation: stateful-spin 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite;
                 }
                 .stateful-loading-spinner::before {
-                    border-top-color: #3498db;
-                    animation-delay: -0.45s;
+                    border-top-color: #3498db; animation-delay: -0.45s;
                 }
                 .stateful-loading-spinner::after {
-                    border-top-color: #e74c3c;
-                    animation-delay: -0.15s;
+                    border-top-color: #e74c3c; animation-delay: -0.15s;
                 }
                 @keyframes stateful-spin {
-                    0% { transform: rotate(0deg); }
-                    100% { transform: rotate(360deg); }
+                    0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); }
                 }
                 .stateful-loading, .stateful-loading * {
                     pointer-events: none !important;
@@ -357,79 +264,61 @@
         }
 
         render() {
-            if (!this.root_element) return;
+            if (!this.element) return;
 
-            // 统一处理所有数据绑定
-            const bindHandlers = {
+            const bind = {
                 'data-bind': (el, key) => el.textContent = this.#state[key],
                 'data-class': (el, attr) => {
                     const mapping = JSON.parse(attr);
-                    Object.entries(mapping).forEach(([cls, key]) => {
-                        el.classList.toggle(cls, !!this.#state[key]);
-                    });
+                    Object.entries(mapping).forEach(([cls, key]) => el.classList.toggle(cls, !!this.#state[key]));
                 },
                 'data-bind-data': (el, key) => {
-                    if (key in this.data) {
-                        if (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)) {
-                            el.value = this.data[key];
-                        } else {
-                            el.textContent = this.data[key];
-                        }
-                    }
+                    if (!(key in this.data)) return;
+                    if (['INPUT','TEXTAREA','SELECT'].includes(el.tagName)) el.value = this.data[key];
+                    else el.textContent = this.data[key];
                 }
             };
 
-            Object.entries(bindHandlers).forEach(([attr, handler]) => {
-                this.root_element.querySelectorAll(`[${attr}]`).forEach(el => {
-                    handler(el, el.getAttribute(attr));
-                });
+            Object.entries(bind).forEach(([attr, handler]) => {
+                this.element.querySelectorAll(`[${attr}]`).forEach(el => handler(el, el.getAttribute(attr)));
             });
         }
 
         #create_loading_overlay() {
             if (this.#loading_overlay) return;
-
-            if (getComputedStyle(this.root_element).position === 'static') {
-                this.root_element.style.position = 'relative';
-            }
+            if (getComputedStyle(this.element).position === 'static') this.element.style.position = 'relative';
 
             this.#loading_overlay = document.createElement('div');
             this.#loading_overlay.className = 'stateful-loading-overlay';
-
-            const spinner = document.createElement('div');
-            spinner.className = 'stateful-loading-spinner';
-            this.#loading_overlay.appendChild(spinner);
-
-            this.root_element.appendChild(this.#loading_overlay);
+            this.#loading_overlay.innerHTML = '<div class="stateful-loading-spinner"></div>';
             this.#loading_overlay.addEventListener('click', e => e.stopPropagation());
+            this.element.appendChild(this.#loading_overlay);
         }
 
         set_loading(state) {
-            if (!this.root_element) return;
+            if (!this.element) return;
 
-            if (state) {
-                this.root_element.classList.add('stateful-loading');
-                this.set_state({ is_loading: true, has_error: false, error_message: '' });
+            this.element.classList.toggle('stateful-loading', state);
+            this.set_state({
+                is_loading: state,
+                has_error: state ? false : this.#state.has_error,
+                error_message: state ? '' : this.#state.error_message
+            });
 
-                if (this.config.loading_animation) {
+            if (this.config.loading_animation) {
+                if (state) {
                     this.#create_loading_overlay();
                     this.#loading_overlay?.classList.add('active');
+                } else {
+                    this.#loading_overlay?.classList.remove('active');
                 }
-            } else {
-                this.root_element.classList.remove('stateful-loading');
-                this.set_state({ is_loading: false });
-                this.#loading_overlay?.classList.remove('active');
             }
         }
 
         set_error(error) {
             this.set_loading(false);
             this.set_state({ has_error: true, error_message: error.message });
-            GM_notification({
-                title: "Error",
-                text: error.message,
-                timeout: 5000
-            });
+            GM_notification({ title: "Error", text: error.message, timeout: 5000 });
         }
 
         async execute_async_operation(operation) {
@@ -446,8 +335,6 @@
     }
 
     class PaymentButton extends AsyncStateComponent {
-        #scheduler_attached = false;
-
         constructor() {
             super({
                 url: COMPONENT_URLS.BUTTON,
@@ -455,180 +342,168 @@
                 enable_css_scoping: false,
                 initial_data: { selected_event: null }
             });
+            this.addEventHandler('click', this.onClick.bind(this));
         }
 
         async mount() {
-            // 确保 unsafeWindow 已加载
-            if (!unsafeWindow.view || !unsafeWindow.scheduler) {
+            if (!unsafeWindow.view?.infoForm?.footer?.[0] || !unsafeWindow.scheduler) {
                 console.log('Waiting for unsafeWindow to load...');
                 return false;
             }
 
             const { view, scheduler } = unsafeWindow;
-            const infoForm = view.infoForm;
+            if (view.infoForm.footer[0].querySelector(this.config.root_selector)) return false;
 
-            // 防止重复插入
-            if (infoForm.footer?.[0]?.querySelector(this.config.root_selector)) {
-                return false;
-            }
+            this.config.parent = view.infoForm.footer[0];
+            if (!(await super.mount())) return false;
 
-            // 尝试在现有按钮后插入
-            const insertAfterButton = infoForm.deleteButton?.[0] || infoForm.cancelButton?.[0];
-            if (insertAfterButton) {
-                insertAfterButton.insertAdjacentElement('afterend', this.root_element);
-            }
-            // 备用插入位置
-            else if (infoForm.footer?.[0]) {
-                infoForm.footer[0].prepend(this.root_element);
-            }
+            scheduler.attachEvent("onClick", id => {
+                this.update_data({ selected_event: scheduler.getEvent(id) });
+                return true;
+            });
 
-            // 注册事件选择监听（只注册一次）
-            if (!this.#scheduler_attached) {
-                scheduler.attachEvent("onClick", (id) => {
-                    this.update_data({
-                        selected_event: scheduler.getEvent(id)
-                    });
-                    return true;
-                });
-                this.#scheduler_attached = true;
-            }
-
-            // 调用基类mount完成实际挂载
-            return super.mount();
+            return true;
         }
 
         async unmount() {
-            // 解绑事件
-            if (this.#scheduler_attached) {
-                const { scheduler } = unsafeWindow;
-                scheduler.detachEvent("onClick");
-                this.#scheduler_attached = false;
-            }
-
-            // 调用基类unmount完成实际卸载
+            unsafeWindow.scheduler?.detachEvent("onClick");
             return super.unmount();
         }
 
-        _on_click(e) {
-            if (e.target.closest('#sb-payment-button') && this.data.selected_event) {
-                this.execute_async_operation(async () => {
-                    await new Promise(r => setTimeout(r, 1500));
-                    GM_notification({
-                        title: "Event Info",
-                        text: JSON.stringify(this.data.selected_event, null, 2),
-                        timeout: 3000
-                    });
-                }).catch(console.error);
-            }
+        onClick(e) {
+            if (!e.target.closest('#sb-payment-button') || !this.data.selected_event) return;
+
+            this.execute_async_operation(async () => {
+                await new Promise(r => setTimeout(r, 1500));
+                GM_notification({
+                    title: "Event Info",
+                    text: JSON.stringify(this.data.selected_event, null, 2),
+                    timeout: 3000
+                });
+            }).catch(console.error);
         }
     }
 
-    // 小费标签组件
     class TipTag extends Component {
         #tip_amount;
-        #mounted = false;
 
         constructor() {
-            // 创建小费元素
-            const tipElement = TipTag.create_tip_element();
-
             super({
-                root_element: tipElement,
-                container: '.price.with-icon',
+                html: `<span class="tip-tag" style="
+                    display: inline-block; margin-left: 8px; color: #007bff;
+                    cursor: pointer; text-decoration: none; transition: all 0.3s ease;
+                    padding: 2px 6px; border-radius: 4px;">Add Tip</span>`,
                 enable_css_scoping: true
             });
 
             this.#tip_amount = null;
-
-            // 使用箭头函数绑定事件处理函数
-            this.onMouseover = () => {
-                this.root_element.style.background = '#f0f7ff';
-                this.root_element.style.textDecoration = 'underline';
-                this.root_element.style.transform = 'translateY(-1px)';
-            };
-
-            this.onMouseout = () => {
-                this.root_element.style.background = 'transparent';
-                this.root_element.style.textDecoration = 'none';
-                this.root_element.style.transform = 'none';
-            };
-
-            this.onClick = () => {
-                const tipAmount = prompt('Enter tip amount (e.g. 5.00):', '5.00');
-                if (tipAmount) {
-                    this.#tip_amount = parseFloat(tipAmount);
-                    if (isNaN(this.#tip_amount)) {
-                        GM_notification({
-                            title: "Invalid Amount",
-                            text: "Please enter a valid number",
-                            timeout: 3000
-                        });
-                        return;
-                    }
-
-                    this.root_element.textContent = `Tip: $${this.#tip_amount.toFixed(2)}`;
-                    this.root_element.style.color = '#28a745';
-                    this.root_element.style.fontWeight = 'bold';
-
-                    GM_notification({
-                        title: "Tip Added",
-                        text: `$${this.#tip_amount.toFixed(2)} tip added to order`,
-                        timeout: 3000
-                    });
-                }
-            };
+            this.addEventHandler('mouseover', this.onMouseover.bind(this));
+            this.addEventHandler('mouseout', this.onMouseout.bind(this));
+            this.addEventHandler('click', this.onClick.bind(this));
         }
 
-        static create_tip_element() {
-            const tipElement = document.createElement('span');
-            tipElement.className = 'tip-tag';
-            tipElement.textContent = 'Add Tip';
+        onMouseover() {
+            if (!this.element) return;
+            this.element.style.background = '#f0f7ff';
+            this.element.style.textDecoration = 'underline';
+            this.element.style.transform = 'translateY(-1px)';
+        }
 
-            // 添加基本样式
-            tipElement.style.cssText = `
-                margin-left: 8px;
-                color: #007bff;
-                cursor: pointer;
-                text-decoration: none;
-                transition: all 0.3s ease;
-                padding: 2px 6px;
-                border-radius: 4px;
-            `;
+        onMouseout() {
+            if (!this.element) return;
+            this.element.style.background = 'transparent';
+            this.element.style.textDecoration = 'none';
+            this.element.style.transform = 'none';
+        }
 
-            return tipElement;
+        onClick() {
+            const tipAmount = prompt('Enter tip amount (e.g. 5.00):', '5.00');
+            if (!tipAmount) return;
+
+            this.#tip_amount = parseFloat(tipAmount);
+            if (isNaN(this.#tip_amount)) {
+                GM_notification({ title: "Invalid Amount", text: "Please enter a valid number", timeout: 3000 });
+                return;
+            }
+
+            if (this.element) {
+                this.element.textContent = `Tip: $${this.#tip_amount.toFixed(2)}`;
+                this.element.style.color = '#28a745';
+                this.element.style.fontWeight = 'bold';
+            }
+
+            GM_notification({
+                title: "Tip Added",
+                text: `$${this.#tip_amount.toFixed(2)} tip added to order`,
+                timeout: 3000
+            });
         }
 
         async mount() {
-            // 添加事件监听器
-            this.root_element.addEventListener('mouseover', this.onMouseover);
-            this.root_element.addEventListener('mouseout', this.onMouseout);
-            this.root_element.addEventListener('click', this.onClick);
+            const body = unsafeWindow.view?.infoForm?.body?.[0];
+            if (!body) {
+                console.log('Waiting for unsafeWindow to load...');
+                return false;
+            }
 
-            // 尝试挂载
-            const result = await super.mount();
-            this.#mounted = result;
-            return result;
+            // 检查是否已存在tip标签
+            if (body.querySelector('.tip-tag')) {
+                return false;
+            }
+
+            // 查找目标父元素
+            const targetParent = this.#findTargetParent(body);
+            if (!targetParent) {
+                // 使用MutationObserver等待目标元素出现
+                const observer = new MutationObserver(() => {
+                    const parent = this.#findTargetParent(body);
+                    if (parent) {
+                        observer.disconnect();
+                        this.config.parent = parent;
+                        super.mount();
+                    }
+                });
+
+                observer.observe(body, {
+                    childList: true,
+                    subtree: true
+                });
+
+                return true;
+            }
+
+            // 直接挂载到找到的父元素
+            this.config.parent = targetParent;
+            return super.mount();
         }
 
-        async unmount() {
-            // 移除事件监听器
-            this.root_element.removeEventListener('mouseover', this.onMouseover);
-            this.root_element.removeEventListener('mouseout', this.onMouseout);
-            this.root_element.removeEventListener('click', this.onClick);
+        #findTargetParent(infoFormBody) {
+            try {
+                // 更精确地定位目标位置
+                const priceContainer = infoFormBody.querySelector(
+                    '#booking-info .top-block.row .col-md-8.col-sm-7 ul li:nth-child(3) span'
+                );
 
-            // 调用基类unmount完成实际卸载
-            const result = await super.unmount();
-            this.#mounted = !result;
-            return result;
+                return priceContainer || null;
+            } catch (error) {
+                console.error('Error finding target parent:', error);
+                return null;
+            }
         }
     }
 
+    async function initializeComponents() {
+        try {
+            const payment_button = new PaymentButton();
+            if (await payment_button.load()) await payment_button.mount();
 
-
-    const payment_button = new PaymentButton();
-    if (document.readyState === 'complete') {
-        payment_button.mount();
-    } else {
-        window.addEventListener('load', () => payment_button.mount());
+            const tips_label = new TipTag();
+            if (await tips_label.load()) await tips_label.mount();
+        } catch (error) {
+            console.error('Initialization error:', error);
+        }
     }
+
+    class HierarchicalComponent extends Component {}
+    window.addEventListener('load', initializeComponents);
 })();

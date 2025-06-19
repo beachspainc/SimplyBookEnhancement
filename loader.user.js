@@ -144,8 +144,15 @@
         }
 
         call(event, data) {
-            if (this.#event_handlers[event])  this.#event_handlers[event].forEach(handler => handler(data));
-            if (this.parent) this.parent.call(event, data);
+            console.log('call', this, event, data);
+            if(this.#event_handlers[event])  this.#event_handlers[event].forEach(handler => handler(data));
+            if(this.parent) this.onCall(this.parent, event, data);
+            return this;
+        }
+
+        onCall(instance, event, data) {
+            console.log('onCall', instance, this);
+            if (instance) instance.call(event, data);
         }
 
         #scope_css() {
@@ -185,7 +192,7 @@
 
     // 新增：分层组件管理器
     class HierarchicalComponent extends Component {
-        #children = [];
+        #children = new Set();
 
         constructor(options) {
             super({
@@ -195,24 +202,37 @@
         }
 
         get children() {
-            return [...this.#children];
+            return Array.from(this.#children);
         }
 
         addChild(child) {
             if (!(child instanceof Component)) throw new Error('Child must be an instance of Component');
             child.parent = this;
-            this.#children.push(child);
+            this.#children.add(child);
+        }
+
+        onCall(instance, event, data) {
+            for (const child of this.children) {
+                super.onCall(child, event, data);
+            }
+        }
+
+        update_data(new_data) {
+            for (const child of this.children) {
+                child.update_data(new_data);
+            }
+            return super.update_data(new_data);
         }
 
         async load() {
             if (!await super.load()) return false;
-            const results = await Promise.all(this.#children.map(child => child.load()));
+            const results = await Promise.all(this.children.map(child => child.load()));
             return results.every(success => success);
         }
 
         async mount() {
             if (!await super.mount()) return false;
-            for (const child of this.#children) {
+            for (const child of this.children) {
                 const mounted = await child.mount();
                 if (!mounted) new Error('Child component failed to mount');
             }
@@ -227,7 +247,7 @@
 
         destroy() {
             this.#children.forEach(child => child.destroy());
-            this.#children = [];
+            this.#children = new Set();
             super.destroy();
         }
     }
@@ -453,6 +473,9 @@
         }
 
         async mount() {
+            this.on('form-shown', (event, options) => {
+                console.log("Test", event, options);
+            })
             return super.mount();
         }
     }
@@ -463,21 +486,25 @@
             super({element: view?.infoForm?.body?.[0]});
             this.addChild(new PaymentButton());
             this.addChild(new TipTag());
-            scheduler.attachEvent("onClick", id => {
-                this.update_data({ selected_event: scheduler.getEvent(id) });
-                return true;
-            });
-            console.log(view.infoForm);
         }
 
         get payment_button() { return this.children[0]; }
         get tip_tag() { return this.children[1]; }
 
-        update_data(new_data) {
-            for (const child of this.children) {
-                child.update_data(new_data);
-            }
-            return super.update_data(new_data);
+        load() {
+            const self = this;
+            scheduler.attachEvent("onClick", id => {
+                this.update_data({ selected_event: scheduler.getEvent(id) });
+                return true;
+            });
+            jQuery(view.infoForm).on('formShown', function(event, options) {
+                console.log('formShown 事件触发', event, options);
+                self.call('form-shown', {
+                    event: event,
+                    options: options
+                });
+            });
+            return super.load();
         }
 
         destroy() {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimplyBook.me Payment Enhancement
 // @namespace    http://tampermonkey.net/
-// @version      8.7
+// @version      8.9
 // @description  Enhanced with event data capture, display, and tip tag feature
 // @author       Your Name
 // @match        https://*.simplybook.me/*
@@ -9,10 +9,10 @@
 // @grant        GM_notification
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        unsafeWindow
 // @connect      raw.githubusercontent.com
 // @run-at       document-idle
 // ==/UserScript==
-
 
 (function() {
     'use strict';
@@ -21,7 +21,8 @@
         REPO_BASE_URL: 'https://raw.githubusercontent.com/beachspainc/SimplyBookEnhancement/main',
         COMPANY_LOGIN: "beachspa",
         API_BASE_URL: 'https://user-api.simplybook.me',
-        API_KEY: '2fefa78171e0c3cd0d7a81e95ef58fd14f474566faabda4abb56bbbd15200c0f'
+        API_KEY: '2fefa78171e0c3cd0d7a81e95ef58fd14f474566faabda4abb56bbbd15200c0f',
+        TEST_API_KEY: '<KEE>',
     };
 
     const COMPONENT_URLS = {
@@ -31,12 +32,58 @@
 
     const { view, scheduler } = unsafeWindow;
 
+    // 事件对象
+    class Event {
+        constructor(name, sender, source) {
+            this.name = name;
+            this.sender = sender;  // 调用者
+            this.source = source;  // 事件源
+        }
+
+        toString() {
+            return `Event(${this.name}, sender=${this.sender}, source=${this.source})`;
+        }
+    }
+
+    class DataProxy {
+        #element
+        constructor(element) {
+            this.#element = element;
+        }
+
+        get(key) {
+            let current = this.#element;
+            while (current) {
+                if (current.has_local(key)) {
+                    return current.get_local(key);
+                }
+                current = current.parent;
+            }
+            return undefined;
+        }
+
+        set(key, value) {
+            this.#element.set_local(key, value);
+        }
+
+        has(key) {
+            let current = this.#element;
+            while (current) {
+                if (current.has_local(key)) {
+                    return true;
+                }
+                current = current.parent;
+            }
+            return false;
+        }
+    }
+
     class Component {
         #parent;
         #element;
         #config;
-        #data;
         #event_handlers = {};
+        #properties = {};  // 节点私有数据
 
         constructor(options) {
             this.#config = {
@@ -45,7 +92,7 @@
                 initial_data: {},
                 ...options
             };
-            this.#data = { ...this.#config.initial_data };
+            this.#properties = { ...this.#config.initial_data };
         }
 
         get parent() { return this.#parent; }
@@ -53,8 +100,63 @@
         get element() { return this.#element; }
         get is_loaded() { return !!this.#element; }
         get config() { return this.#config; }
-        get data() { return {...this.#data}; }
+        get data() { return new DataProxy(this); } // 返回数据代理
         get is_mounted() { return this.#element?.parentNode && document.body.contains(this.#element); }
+
+        // 私有数据操作
+        set_local(key, value) {
+            this.#properties[key] = value;
+        }
+
+        get_local(key, default_value = null) {
+            return this.#properties.hasOwnProperty(key) ? this.#properties[key] : default_value;
+        }
+
+        has_local(key) {
+            return this.#properties.hasOwnProperty(key);
+        }
+
+        // 事件系统
+        on(name, handler) {
+            if (!this.#event_handlers[name]) this.#event_handlers[name] = [];
+            this.#event_handlers[name].push(handler);
+            if (this.is_mounted) this.#element.addEventListener(name, handler);
+            return this; // 支持链式调用
+        }
+
+        create_event(name, source = null) {
+            return new Event(name, this, source || this);
+        }
+
+        call(event, ...args) {
+            // 如果传入的是字符串，创建事件对象
+            if (typeof event === 'string') {
+                event = this.create_event(event);
+            }
+
+            event.source = event.source || this;
+
+            // 处理本地事件
+            const handlers = this.#event_handlers[event.name];
+            if (handlers) {
+                handlers.forEach(handler => handler(event, ...args));
+            }
+
+            // 向上传播
+            if (event.source === this && this.parent) {
+                this.parent.on_event(event, ...args);
+            }
+        }
+
+        on_event(event, ...args) {
+            // 先处理本地事件
+            this.call(event, ...args);
+
+            // 继续向上传播
+            if (this.parent && this.parent !== event.source) {
+                this.parent.on_event(event, ...args);
+            }
+        }
 
         async load() {
             if (this.is_loaded) return true;
@@ -136,25 +238,6 @@
             });
         }
 
-        on(event, handler) {
-            if (!this.#event_handlers[event]) this.#event_handlers[event] = [];
-            this.#event_handlers[event].push(handler);
-            if (this.is_mounted) this.#element.addEventListener(event, handler);
-            return this;
-        }
-
-        call(event, data) {
-            console.log('call', this, event, data);
-            if(this.#event_handlers[event])  this.#event_handlers[event].forEach(handler => handler(data));
-            if(this.parent) this.onCall(this.parent, event, data);
-            return this;
-        }
-
-        onCall(instance, event, data) {
-            console.log('onCall', instance, this);
-            if (instance) instance.call(event, data);
-        }
-
         #scope_css() {
             if (!this.#element) return;
             const scope_id = `component_${Math.random().toString(36).slice(2, 11)}`;
@@ -176,7 +259,9 @@
         }
 
         update_data(new_data) {
-            this.#data = { ...this.#data, ...new_data };
+            Object.entries(new_data).forEach(([key, value]) => {
+                this.set_local(key, value);
+            });
             if (this.is_mounted) this.render();
             return this;
         }
@@ -190,7 +275,7 @@
         render() {}
     }
 
-    // 新增：分层组件管理器
+    // 分层组件
     class HierarchicalComponent extends Component {
         #children = new Set();
 
@@ -211,17 +296,36 @@
             this.#children.add(child);
         }
 
-        onCall(instance, event, data) {
-            for (const child of this.children) {
-                super.onCall(child, event, data);
-            }
+        call(event, ...args) {
+            // 处理本地事件并向上传播
+            super.call(event, ...args);
+
+            // 向子组件传播
+            this.children.forEach(child => {
+                if (child !== event.source) {
+                    child.on_event(event, ...args);
+                }
+            });
         }
 
-        update_data(new_data) {
-            for (const child of this.children) {
-                child.update_data(new_data);
+        on_event(event, ...args) {
+            // 处理本地事件
+            super.call(event, ...args);
+
+            // 根据事件来源决定传播方向
+            if (event.source === this.parent) {
+                // 来自父组件：向下传播
+                this.children.forEach(child => {
+                    if (child !== event.source) {
+                        child.on_event(event, ...args);
+                    }
+                });
+            } else if (this.children.includes(event.source)) {
+                // 来自子组件：向上传播
+                if (this.parent && this.parent !== event.source) {
+                    this.parent.on_event(event, ...args);
+                }
             }
-            return super.update_data(new_data);
         }
 
         async load() {
@@ -324,9 +428,10 @@
                     Object.entries(mapping).forEach(([cls, key]) => el.classList.toggle(cls, !!this.#state[key]));
                 },
                 'data-bind-data': (el, key) => {
-                    if (!(key in this.data)) return;
-                    if (['INPUT','TEXTAREA','SELECT'].includes(el.tagName)) el.value = this.data[key];
-                    else el.textContent = this.data[key];
+                    if (!this.has_local(key)) return;
+                    const value = this.get_local(key);
+                    if (['INPUT','TEXTAREA','SELECT'].includes(el.tagName)) el.value = value;
+                    else el.textContent = value;
                 }
             };
 
@@ -390,9 +495,20 @@
                 url: COMPONENT_URLS.BUTTON,
                 root_selector: '#sb-payment-button',
                 enable_css_scoping: false,
-                initial_data: { selected_event: null }
+                initial_data: { selected_event: null },
+                loading_animation: true
             });
             this.on('click', this.onClick.bind(this));
+        }
+
+        render() {
+            super.render();
+            const button = this.element;
+            if (button) {
+                button.disabled = this.state.is_loading;
+                button.style.opacity = this.state.is_loading ? 0.7 : 1;
+                button.style.cursor = this.state.is_loading ? 'not-allowed' : 'pointer';
+            }
         }
 
         async mount() {
@@ -402,19 +518,32 @@
             return super.mount();
         }
 
-        async unmount() {
-            return super.unmount();
-        }
-
         onClick(e) {
-            if (!e.target.closest('#sb-payment-button') || !this.data.selected_event) return;
-            this.execute_async_operation(async () => {
-                await new Promise(r => setTimeout(r, 1500));
+            if (this.state.is_loading) return;
+
+            const selectedEvent = this.data.get('clicl_info');
+            console.log(selectedEvent);
+            if (!selectedEvent) {
                 GM_notification({
-                    title: "Event Info",
-                    text: JSON.stringify(this.data.selected_event, null, 2),
+                    title: "No Event Selected",
+                    text: "Please select an appointment first",
                     timeout: 3000
                 });
+                return;
+            }
+
+            this.execute_async_operation(async () => {
+                // 模拟异步操作
+                await new Promise(r => setTimeout(r, 1500));
+
+                // 实际支付处理逻辑
+                GM_notification({
+                    title: "Payment Processing",
+                    text: `Processing payment for: ${selectedEvent.text}`,
+                    timeout: 3000
+                });
+
+                return true;
             }).catch(console.error);
         }
     }
@@ -430,9 +559,14 @@
                 enable_css_scoping: true
             });
             this.#tip_amount = null;
+            this.on('form-shown', this.onFormShown.bind(this));
             this.on('mouseover', this.onMouseover.bind(this));
             this.on('mouseout', this.onMouseout.bind(this));
             this.on('click', this.onClick.bind(this));
+        }
+
+        onFormShown(options) {
+            console.log('formShown', options);
         }
 
         onMouseover() {
@@ -471,16 +605,31 @@
                 timeout: 3000
             });
         }
+    }
 
-        async mount() {
-            this.on('form-shown', (event, options) => {
-                console.log("Test", event, options);
-            })
-            return super.mount();
+    class Scheduler extends HierarchicalComponent {
+        constructor() {
+            super({element: scheduler?._obj});
+            this.addChild(new PaymentController());
+        }
+        load() {
+            scheduler.attachEvent("onClick", id => {
+                const event = scheduler.getEvent(id);
+                this.call(this.create_event('scheduler_clicked'), id, event);
+                console.log('onClick', id, event);
+                if (event) {
+                    this.update_data({ click_info: event });
+                }
+                return true;
+            });
+            return super.load();
+        }
+
+        on_view_change(mode, date) {
+            console.log('onViewChange', mode, date);
         }
     }
 
-    // 新增：支付控制器（管理子组件的分层组件）
     class PaymentController extends HierarchicalComponent {
         constructor() {
             super({element: view?.infoForm?.body?.[0]});
@@ -493,31 +642,35 @@
 
         load() {
             const self = this;
-            scheduler.attachEvent("onClick", id => {
-                this.update_data({ selected_event: scheduler.getEvent(id) });
-                return true;
-            });
-            jQuery(view.infoForm).on('formShown', function(event, options) {
-                console.log('formShown 事件触发', event, options);
-                self.call('form-shown', {
-                    event: event,
-                    options: options
+
+            // 确保scheduler存在
+            if (!scheduler) {
+                console.error('Scheduler not available');
+                return false;
+            }
+
+
+            // 使用jQuery的事件监听
+            if (view?.infoForm) {
+                jQuery(view.infoForm).on('formShown', function(event, options) {
+                    console.log('formShown');
+                    self.call(self.create_event('form-shown'), event, options);
                 });
-            });
+            }
+
             return super.load();
         }
 
         destroy() {
-            scheduler?.detachEvent("onClick");
+            if (scheduler) scheduler.detachEvent("onClick");
             super.destroy();
         }
-
     }
 
     async function initializeComponents() {
         try {
             // 使用支付控制器管理所有组件
-            const controller = new PaymentController();
+            const controller = new Scheduler();
 
             // 加载并挂载控制器及其所有子组件
             if (await controller.load()) {

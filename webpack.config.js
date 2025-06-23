@@ -7,14 +7,13 @@ const os = require('os');
 
 // 使用 CommonJS 兼容的 get-port 版本
 const getPort = require('get-port');
-
 class Config {
 
-    static GetHost() {
+    static get GetHost() {
         return process.env.WEBPACK_HOST || 'localhost';
     }
-
     static GetPort() {
+
         return process.env.WEBPACK_PORT || 8080;
     }
 

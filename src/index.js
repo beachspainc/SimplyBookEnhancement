@@ -3,11 +3,11 @@ window.simplyBookScriptLoaded = true;
 
 // 添加导出语句
 export function init() {
-    console.log('脚本初始化开始l');
+    console.log('脚本初始化开始l2');
 
     // 创建调试按钮的代码...
     const debugBtn = document.createElement('button');
-    debugBtn.textContent = '测试调试3cas';
+    debugBtn.textContent = '测试调试5cas';
     debugBtn.style.position = 'fixed';
     debugBtn.style.bottom = '20px';
     debugBtn.style.right = '20px';

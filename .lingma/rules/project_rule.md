@@ -69,8 +69,8 @@
 
 - **方法命名**：
     - 普通方法使用动词或动词短语（`calculate_total()`）
-    - 工厂方法使用`Create`前缀（`CreateInstance()`）
     - 转换方法使用`To`前缀（`ToString()`，`ToJson()`）
+    - 避免不必要的冗长命名（避免`Logger.CreateLogger()`, 使用`logger.Create()`）
 
 - **布尔类型特殊规则**：
     - **所有布尔值相关元素**使用 `is_`、`has_`、`can_` 等前缀：
@@ -81,10 +81,13 @@
 
 - **其他原则**：
     - 避免使用缩写，除非是广泛接受的（如 HTTP、ID）
+    - 避免使用数字作为任何命名（如：`count1`，`count2`）
+    - 局部变量避免不必要的冗长命名（避免：`logger_instance`，使用`logger`)
     - 避免单个字符命名（除循环计数器`i`、坐标`x/y`等）
     - 时间单位在变量名中显式标注（`timeout_ms`，`cache_ttl_sec`）
 
 - **领域驱动设计(DDD)命名**：
+
   | 元素         | 命名模式                  | 示例                     |
   |--------------|---------------------------|--------------------------|
   | 实体         | 领域对象名词              | `User`, `Order`          |
@@ -95,68 +98,21 @@
 
 ---
 
-## 2. 封装性
-### 2.1 访问控制原则
-| 语言       | 访问级别          | 使用场景                                                                 |
-|------------|-------------------|--------------------------------------------------------------------------|
-| **通用**   | `public`          | 对外提供的API接口、跨模块调用的核心服务                                  |
-|            | `protected`       | 需要被子类继承或覆盖的方法，框架扩展点                                   |
-|            | `private`         | 内部实现细节，不允许外部直接访问                                         |
-| **Java**   | 包级(default)     | 同一模块内组件间的交互                                                   |
-| **JS**     | `export`控制      | 模块对外暴露的接口                                                       |
-| **Python** | `_`单下划线前缀   | 模块内部使用的函数/变量（约定私有）                                      |
-|            | `__`双下划线前缀  | 类内部名称改写（name mangling），防止子类意外覆盖                        |
----
 
-### 基本原则
+## 2. 封装性
+
+### 2.1 基本原则
 
 - **默认私有**：所有字段（包括配置字段）默认设为 `private`。  
   > **注意**：配置字段必须通过 Getter 访问，禁止直接访问字段。
-  
-```java
-private String internalState;
-```
 - **受控访问**：通过方法暴露必要访问
-
-```java
-public String getName() {
-    return this.name;
-}
-
-public void setAge(int age) {
-    if (age < 0) throw new IllegalArgumentException();
-    this.age = age;
-}
-```
 - **不可变设计**：允许公开的字段使用 `final`
-
-```java
-public final class Constants {
-    public static final int MAX_RETRIES = 3;
-}
-```
----
-
-### 集合类型保护
-```java
-public class SecureCollection {
-    private List<String> sensitiveData = new ArrayList<>();
-    
-    public List<String> getData() {
-        return Collections.unmodifiableList(new ArrayList<>(sensitiveData));
-    }
-    
-    public void addData(String item) {
-        if (item == null || item.trim().isEmpty()) {
-            throw new IllegalArgumentException("无效数据");
-        }
-        sensitiveData.add(item);
-    }
-}
-```
----
-
-### 必须封装的场景
+- **集合类型保护** ：集合类型字段使用 `Collections.unmodifiableList()`
+- **继承设计**: 对需要封装的类使用 `final`
+- **构造函数**：不允许在构造函数中暴露内部可变对象引用
+- **公开字段文档**：明确说明使用约束
+- **多线程环境**：使用 `volatile` 或原子类
+#### 必须封装的场景
 ```mermaid
 graph TD
 A[需要封装] --> B(业务逻辑)
@@ -165,23 +121,6 @@ A --> D(数据验证)
 A --> E(线程安全)
 A --> F(安全敏感)
 ```
-
----
-
-### 注意事项
-
-| 场景                  | 正确做法                          | 避免做法                  |
-|-----------------------|-----------------------------------|---------------------------|
-| 公开字段文档          | 明确说明使用约束                  | 无文档说明                |
-| 构造函数              | 不暴露内部可变对象引用            | 直接暴露内部集合引用      |
-| 多线程环境            | 使用 `volatile` 或原子类          | 未做同步处理              |
-| 集合返回              | 返回不可修改副本                  | 直接返回原始集合引用      |
-| 继承设计              | 对需要封装的类使用 `final`        | 允许不可控的子类修改      |
-
-
----
-
-
 > **设计原则**：封装程度应与类的重要性成正比，核心组件应实施最严格的访问控制。
 ### 2.2 类封装规范
 
@@ -196,7 +135,8 @@ A --> F(安全敏感)
 | 动态配置       | 实例方法          | 语言规范          | `config.getLatestRate()`          |
 
 **实现要求**：
-1. 所有配置字段必须私有化：
+1.对于外部内存配置，请使用静态Getter。
+2.
    ```java
    // Java示例 - 使用标准Getter命名
    public class AppConfig {

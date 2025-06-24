@@ -84,7 +84,7 @@ class Logger {
     }
 
     // 创建日志记录器实例
-    static createLogger(logLevel = Constants.DEFAULT_LOG_LEVEL) {
+    static CreateLogger(logLevel = Constants.DEFAULT_LOG_LEVEL) {
         return new Logger(logLevel);
     }
 
@@ -133,7 +133,7 @@ class Logger {
 }
 
 // 初始化日志系统
-const logger = Logger.createLogger(Constants.DEFAULT_LOG_LEVEL);
+const logger = Logger.CreateLogger(Constants.DEFAULT_LOG_LEVEL);
 
 // ConflictDetectorPlugin类
 class ConflictDetectorPlugin {
@@ -253,11 +253,7 @@ class WebpackConfig {
                 {
                     directory: path.join(__dirname, 'dist'),
                     publicPath: '/',
-                    serveIndex: true,
-                    watch: { 
-                        ignored: /node_modules/,
-                        usePolling: true
-                    }
+                    serveIndex: true
                 },
                 {
                     directory: path.join(__dirname, 'public'),

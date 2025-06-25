@@ -3,47 +3,47 @@
 ## 1. 命名规范
 
 ### 1.1 命名规则表
-| 作用域       | 元素               | 命名规则          | 说明与示例                          |
-|--------------|--------------------|-------------------|-------------------------------------|
-| 全局         | 类名               | PascalCase        | DatabaseService, UserManager        |
-| 全局         | 抽象类             | Abstract+Pascal   | AbstractConnection, BaseHandler     |
-| 全局         | 接口               | PascalCase        | Runnable, DataParser                |
-| 全局         | 枚举类型           | PascalCase        | ErrorCode, ColorMode                |
-| 全局         | 异常类             | PascalCase        | ValidationException, TimeoutError   |
-| 全局         | 常量               | UPPER_SNAKE_CASE  | MAX_RETRY_COUNT, API_TIMEOUT_MS     |
-| 全局         | 变量               | snake_case        | global_config, instance_count       |
-| 全局         | 函数               | snake_case        | (JS/Python) validate_input, get_timestamp |
-| Java         | 类文件             | PascalCase        | Logger.java, Config.java            |
-| JS/Python    | 类文件             | snake_case        | logger.js, config.py                |
-| Java         | 包名               | 全小写+点分隔     | com.utils, org.example.core         |
-| JS/Python    | 模块名             | snake_case        | data_utils.py, http_service.js      |
-| 类内部       | 静态属性           | PascalCase        | DefaultConfig, ConnectionPool       |
-| 类内部       | 静态Getter         | PascalCase        | Instance, ApiKey                    |
-| 类内部       | 静态Setter         | PascalCase        | Instance(value), ApiKey(key)        |
-| 类内部       | 静态方法           | PascalCase        | CreateInstance, ValidateInput       |
-| 类内部       | 常量               | UPPER_SNAKE_CASE  | DEFAULT_TIMEOUT, MAX_CONNECTIONS    |
-| 类内部       | 实例属性           | snake_case        | user_profile, connection_pool       |
-| 类内部       | Java实例Getter     | get+属性名       | getUserProfile(), getConnectionPool() |
-| 类内部       | Java实例Setter     | set+属性名       | setUserProfile(val), setConnectionPool(val) |
-| 类内部       | JS实例Getter       | 属性访问器       | user_profile, connection_pool       |
-| 类内部       | JS实例Setter       | 属性访问器       | user_profile = val, connection_pool = val |
-| 类内部       | Python实例Getter   | 属性装饰器       | user_profile, connection_pool       |
-| 类内部       | Java布尔Getter     | is+属性名        | isActive(), isValid()               |
-| 类内部       | JS布尔Getter       | is_前缀+属性     | is_active, is_valid                 |
-| 类内部       | Python布尔Getter   | is_前缀+属性     | is_active, is_valid                 |
-| 类内部       | Java私有成员       | _前缀            | _internalCache, _resetCounters()    |
-| 类内部       | JS私有成员         | #前缀            | #internal_data, #load_config()      |
-| 类内部       | Python私有成员     | _前缀            | _internal_cache, _reset_counters()  |
-| 类内部       | Java实例方法       | camelCase         | updateProfile, calculateTotal       |
-| 类内部       | JS实例方法         | snake_case        | update_profile, calculate_total     |
-| 类内部       | Python实例方法     | snake_case        | update_profile, calculate_total     |
-| 类内部       | 枚举成员           | UPPER_SNAKE_CASE  | SUCCESS, NOT_FOUND                  |
-| 局部         | 变量               | snake_case        | temp_buffer, retry_count            |
-| 局部         | 布尔变量           | is_前缀+snake_case| is_valid, has_permission            |
-| 测试代码     | 测试类             | PascalCase+Test  | UserServiceTest.java                |
-| 测试代码     | 测试方法           | snake_case       | test_user_creation()                |
-| 项目         | 配置文件           | kebab-case       | app-config.yaml, db-setup.toml      |
-| 项目         | 资源文件           | kebab-case       | user-avatar.png, icon-sprite.svg    |
+| 作用域                | 元素               | 命名规则          | 说明与示例                          |
+|--------------------|--------------------|-------------------|-------------------------------------|
+| 全局                 | 类名               | PascalCase        | DatabaseService, UserManager        |
+| 全局                 | 抽象类             | Abstract+Pascal   | AbstractConnection, BaseHandler     |
+| 全局                 | 接口               | PascalCase        | Runnable, DataParser                |
+| 全局                 | 枚举类型           | PascalCase        | ErrorCode, ColorMode                |
+| 全局                 | 异常类             | PascalCase        | ValidationException, TimeoutError   |
+| 全局                 | 常量               | UPPER_SNAKE_CASE  | MAX_RETRY_COUNT, API_TIMEOUT_MS     |
+| 全局                 | 变量               | snake_case        | global_config, instance_count       |
+| 全局                 | 函数               | snake_case        | (JS/Python) validate_input, get_timestamp |
+| Java包              | 类文件             | PascalCase        | Logger.java, Config.java            |
+| JavaScript/Python包 | 类文件             | snake_case        | logger.js, config.py                |
+| Java包               | 包名               | 全小写+点分隔     | com.utils, org.example.core         |
+| JavaScript/Python包          | 模块名             | snake_case        | data_utils.py, http_service.js      |
+| 类内部                | 静态属性           | PascalCase        | DefaultConfig, ConnectionPool       |
+| 类内部                | 静态Getter         | PascalCase        | Instance, ApiKey                    |
+| 类内部                | 静态Setter         | PascalCase        | Instance(value), ApiKey(key)        |
+| 类内部                | 静态方法           | PascalCase        | CreateInstance, ValidateInput       |
+| 类内部                | 常量               | UPPER_SNAKE_CASE  | DEFAULT_TIMEOUT, MAX_CONNECTIONS    |
+| 类内部                | 实例属性           | snake_case        | user_profile, connection_pool       |
+| 类内部                | Java实例Getter     | get+属性名       | getUserProfile(), getConnectionPool() |
+| 类内部                | Java实例Setter     | set+属性名       | setUserProfile(val), setConnectionPool(val) |
+| 类内部                | JavaScript实例Getter       | 属性访问器       | user_profile, connection_pool       |
+| 类内部                | JavaScript实例Setter       | 属性访问器       | user_profile = val, connection_pool = val |
+| 类内部                | Python实例Getter   | 属性装饰器       | user_profile, connection_pool       |
+| 类内部                | Java布尔Getter     | is+属性名        | isActive(), isValid()               |
+| 类内部                | JavaScript布尔Getter       | is_前缀+属性     | is_active, is_valid                 |
+| 类内部                | Python布尔Getter   | is_前缀+属性     | is_active, is_valid                 |
+| 类内部                | Java私有成员       | _前缀            | _internalCache, _resetCounters()    |
+| 类内部                | JavaScript私有成员         | #前缀            | #internal_data, #load_config()      |
+| 类内部                | Python私有成员     | _前缀            | _internal_cache, _reset_counters()  |
+| 类内部                | Java实例方法       | camelCase         | updateProfile, calculateTotal       |
+| 类内部                | JavaScript实例方法         | snake_case        | update_profile, calculate_total     |
+| 类内部                | Python实例方法     | snake_case        | update_profile, calculate_total     |
+| 类内部                | 枚举成员           | UPPER_SNAKE_CASE  | SUCCESS, NOT_FOUND                  |
+| 局部                 | 变量               | snake_case        | temp_buffer, retry_count            |
+| 局部                 | 布尔变量           | is_前缀+snake_case| is_valid, has_permission            |
+| 测试代码               | 测试类             | PascalCase+Test  | UserServiceTest.java                |
+| 测试代码               | 测试方法           | snake_case       | test_user_creation()                |
+| 项目                 | 配置文件           | kebab-case       | app-config.yaml, db-setup.toml      |
+| 项目                 | 资源文件           | kebab-case       | user-avatar.png, icon-sprite.svg    |
 
 ### 1.2 命名原则说明
 - **Getter/Setter规则**：
@@ -52,7 +52,7 @@
         - 布尔Getter使用 `is` 前缀（`isActive()`）
         - 示例：`user.getProfile()`, `config.setTimeout(100)`
 
-    - **JS/Python**：
+    - **JavaScript/Python**：
         - 直接使用目标名词，不加`get`/`set`前缀
         - JS：属性访问器（`user.profile`）
         - Python：属性装饰器（`user.profile`）
@@ -136,25 +136,6 @@ A --> F(安全敏感)
 
 **实现要求**：
 1.对于外部内存配置，请使用静态Getter。
-2.
-   ```java
-   // Java示例 - 使用标准Getter命名
-   public class AppConfig {
-       private static final String API_KEY = System.getenv("API_KEY");
-       private int timeout;
-       
-       // 环境变量（静态Getter）
-       public static String ApiKey() {
-           return API_KEY;
-       }
-       
-       // 文件配置（实例Getter）
-       public int getTimeout() {  // 使用get前缀
-           return timeout;
-       }
-       
-       // 使用Lombok注解的例外
-       @Getter @Setter
-       private int maxConnections;
-   }
-   ```
+2.Getter禁止在业务逻辑中直接从外部配置中获取。
+3.内部需要包含一个Constant类，用于存储默认值和Getter的逻辑扩展。
+4.敏感配置的Getter需要有默认值

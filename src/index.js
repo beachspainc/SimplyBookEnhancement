@@ -7,9 +7,9 @@ export function init() {
 
     // 创建调试按钮的代码...
     const debugBtn = document.createElement('button');
-    debugBtn.textContent = '测试调试5';
+    debugBtn.textContent = '测试调试12';
     debugBtn.style.position = 'fixed';
-    debugBtn.style.bottom = '20px';
+    debugBtn.style.bottom = '40px';
     debugBtn.style.right = '20px';
     debugBtn.style.zIndex = '9999';
     debugBtn.addEventListener('click', () => {

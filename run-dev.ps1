@@ -55,18 +55,59 @@ function Write-Debug($message) {
     Write-Host "[DEBUG] $message" -ForegroundColor $DebugColor
 }
 
-# Clean project function
 function Invoke-Clean {
     Write-Info "Starting full project cleanup..."
 
     try {
-        # Delete dist directory
-        if (Test-Path -Path "dist") {
-            Remove-Item -Recurse -Force "dist"
-            Write-Success "Deleted dist directory"
+        # 0. 预检查：确保没有进程锁定文件
+        Write-Info "Checking for processes locking project files..."
+        $lockedProcesses = Get-Process | Where-Object {
+            $_.Path -like "$(Get-Location)\*" -and
+            $_.Name -match "node|webpack|powershell"
         }
 
-        # Delete cache directories
+        if ($lockedProcesses) {
+            Write-Warning ("Found {0} running processes that may lock files:" -f $lockedProcesses.Count)
+            $lockedProcesses | Format-Table Id, Name, Path -AutoSize
+
+            $confirm = Read-Host "Force terminate these processes? (y/n)"
+            if ($confirm -eq 'y') {
+                $lockedProcesses | Stop-Process -Force
+                Start-Sleep -Seconds 1
+                Write-Success "Terminated locking processes"
+            } else {
+                Write-Error "Cleanup aborted due to active file locks"
+                exit 1
+            }
+        }
+
+        # 1. 删除dist目录（带智能重试机制）
+        $distPath = Join-Path (Get-Location) "dist"
+        if (Test-Path -Path $distPath) {
+            Write-Info "Deleting dist directory (with smart retry)..."
+            $retries = 5
+            $cleaned = $false
+
+            while ($retries -gt 0 -and -not $cleaned) {
+                try {
+                    Remove-Item -Recurse -Force $distPath -ErrorAction Stop
+                    Write-Success "Deleted dist directory"
+                    $cleaned = $true
+                } catch {
+                    $retryDelay = (6 - $retries) * 2  # 动态延迟：第一次2秒，最后一次10秒
+                    Write-Warning ("Cleanup failed (retries left: {0}). Waiting {1} seconds..." -f $retries, $retryDelay)
+                    Start-Sleep -Seconds $retryDelay
+                    $retries--
+                }
+            }
+
+            if (-not $cleaned) {
+                Write-Error "彻底清理失败，请手动删除dist目录"
+                exit 1
+            }
+        }
+
+        # 2. 删除缓存目录（按需使用延迟）
         $cachePaths = @(
             "node_modules\.cache",
             ".cache-loader",
@@ -75,39 +116,91 @@ function Invoke-Clean {
         )
 
         foreach ($cachePath in $cachePaths) {
-            if (Test-Path -Path $cachePath) {
-                Remove-Item -Recurse -Force $cachePath
-                Write-Success "Deleted cache directory $cachePath"
+            $fullPath = Join-Path (Get-Location) $cachePath
+            if (Test-Path -Path $fullPath) {
+                try {
+                    # 仅在需要时使用延迟
+                    if ($cachePath -eq "node_modules") {
+                        Write-Info "Deleting large directory $cachePath, adding safety delay..."
+                        Start-Sleep -Seconds 1
+                    }
+
+                    Remove-Item -Recurse -Force $fullPath -ErrorAction Stop
+                    Write-Success ("Deleted cache directory {0}" -f $cachePath)
+                } catch {
+                    # 修复的变量引用 - 使用字符串格式化和显式变量
+                    Write-Warning ("Failed to delete {0}: {1}" -f $cachePath, $_.Exception.Message)
+
+                    # 仅对重要目录重试
+                    if ($cachePath -match "node_modules|dist") {
+                        Start-Sleep -Seconds 2
+                        Remove-Item -Recurse -Force $fullPath -ErrorAction SilentlyContinue
+                    }
+                }
             }
         }
 
-        # Flush DNS cache
+        # 3. 系统级清理（无延迟）
         Write-Info "Flushing DNS cache..."
         ipconfig /flushdns | Out-Null
         Write-Success "DNS cache flushed"
 
-        # Clean npm cache
         Write-Info "Cleaning npm cache..."
         npm cache clean --force | Out-Null
         Write-Success "npm cache cleaned"
 
-        # Delete node_modules and package-lock.json
-        if (Test-Path -Path "node_modules") {
-            Remove-Item -Recurse -Force "node_modules"
-            Write-Success "Deleted node_modules"
+        # 4. 深度清理（使用条件延迟）
+        # 4.1 删除node_modules
+        $nodeModulesPath = Join-Path (Get-Location) "node_modules"
+        if (Test-Path -Path $nodeModulesPath) {
+            Write-Info "Deleting node_modules (adding safety delay for large directory)..."
+            Start-Sleep -Seconds 1  # 大型目录需要额外时间
+
+            try {
+                Remove-Item -Recurse -Force $nodeModulesPath -ErrorAction Stop
+                Write-Success "Deleted node_modules"
+            } catch {
+                Write-Warning ("Failed to delete node_modules: {0}" -f $_.Exception.Message)
+                Start-Sleep -Seconds 3
+                Remove-Item -Recurse -Force $nodeModulesPath -ErrorAction SilentlyContinue
+            }
         }
 
-        if (Test-Path -Path "package-lock.json") {
-            Remove-Item -Force "package-lock.json"
+        # 4.2 删除package-lock.json（无延迟）
+        $lockFilePath = Join-Path (Get-Location) "package-lock.json"
+        if (Test-Path -Path $lockFilePath) {
+            Remove-Item -Force $lockFilePath
             Write-Success "Deleted package-lock.json"
         }
 
-        # 添加安全延迟
-        Write-Info "Adding safety delay to ensure file system release..."
-        Start-Sleep -Seconds 2
-        Write-Success "All caches cleaned successfully with safety delay!"
+        # 5. 文件系统安全检查（使用最小延迟）
+        Write-Info "Performing filesystem health check..."
+        Start-Sleep -Milliseconds 500  # 极短延迟确保文件系统状态更新
+
+        # 检查是否仍有残留文件
+        $residualFiles = @(
+            $distPath,
+            $nodeModulesPath,
+            $lockFilePath
+        ) | Where-Object { Test-Path $_ }
+
+        if ($residualFiles) {
+            Write-Warning "Residual files detected after cleanup:"
+            $residualFiles | ForEach-Object { Write-Warning ("  - {0}" -f $_) }
+        } else {
+            Write-Success "No residual files detected"
+        }
+
+        # 6. 最终资源释放（使用短延迟）
+        Write-Info "Performing final system release..."
+        [System.GC]::Collect()
+        [System.GC]::WaitForPendingFinalizers()
+        Start-Sleep -Milliseconds 300  # 非常短的延迟
+
+        Write-Success "Project cleaned successfully with optimized safety measures!"
     } catch {
-        Write-Error "Cleanup failed: $($_.Exception.Message)"
+        Write-Error ("Cleanup failed: {0}" -f $_.Exception.Message)
+        Write-Debug ("Error details: {0}" -f $_.Exception.StackTrace)
         exit 1
     }
 }

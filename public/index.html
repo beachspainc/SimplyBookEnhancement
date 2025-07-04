@@ -3,6 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <title>Tampermonkey Development Server</title>
+<style>
+    body {
+        background: linear-gradient(135deg, #e6f7ff 0%, #f0f8ff 100%);
+        color: #333;
+        line-height: 1.6;
+        min-height: 100vh;
+        padding: 20px;
+        position: relative;
+
+    }
+</style>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -103,7 +114,7 @@
 <div class="footer">
     <p>开发服务器 | 最后更新: <span id="timestamp"></span></p>
 </div>
-
+<script src="s/site-status.js"></script>
 <script>
     // 动态加载服务器信息
     async function loadServerInfo() {

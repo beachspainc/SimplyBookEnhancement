@@ -1,0 +1,306 @@
+/* ✅ site-status.css - v7.2.0：添加发送按钮动画效果 */
+:root {
+  --transition-speed: 0.4s;
+  --panel-bg: #fff;
+  --text-color: #1e293b;
+  --muted-color: #64748b;
+  --border-color: #e2e8f0;
+  --input-bg: #f8fafc;
+  --feature-bg: #f1f5f9;
+  --success-color: #10b981;
+}
+
+.site-status-icon {
+  position: fixed;
+  top: 200px;
+  left: 0;
+  background: linear-gradient(to right, var(--status-color), color-mix(in srgb, var(--status-color), white 15%));
+  border-left: 8px solid var(--status-color, #4f46e5);
+  border-radius: 0 12px 12px 0;
+  padding: 10px 14px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+  color: #fff;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+  font-size: 15px;
+  display: flex;
+  flex-direction: column;
+  max-width: 320px;
+  width: auto;
+  z-index: 9999;
+  transition: max-width var(--transition-speed) ease;
+  transform: translateX(0);
+}
+
+.status-compact {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+  width: 100%;
+  cursor: pointer;
+}
+
+.status-label {
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: default;
+  letter-spacing: 0.3px;
+}
+
+.status-emoji {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  justify-content: flex-start;
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: default;
+  font-size: 17px;
+}
+
+.status-dots {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  margin-left: 4px;
+}
+
+.status-dots .dot {
+  width: 5px;
+  height: 5px;
+  background-color: #fff;
+  border-radius: 50%;
+  opacity: 0;
+  animation: blinkDot 1.5s infinite;
+}
+
+.status-dots .dot1 { animation-delay: 0s; }
+.status-dots .dot2 { animation-delay: 0.3s; }
+.status-dots .dot3 { animation-delay: 0.6s; }
+
+@keyframes blinkDot {
+  0%, 100% { opacity: 0; }
+  50% { opacity: 1; }
+}
+
+/* 状态面板 */
+.site-status-panel {
+  overflow: hidden;
+  max-height: 0;
+  opacity: 0;
+  transition: max-height var(--transition-speed) ease, opacity var(--transition-speed) ease;
+  background: var(--panel-bg);
+  color: var(--text-color);
+  margin-top: 12px;
+  padding: 0;
+  border-radius: 10px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  font-size: 14px;
+  border: 1px solid var(--border-color);
+}
+
+.site-status-panel.collapsed {
+  display: none;
+}
+
+.expanded .site-status-panel {
+  max-height: 500px;
+  opacity: 1;
+  display: block;
+}
+
+/* 面板内容 */
+.panel-content {
+  padding: 15px;
+}
+
+.panel-message {
+  color: var(--text-color);
+  line-height: 1.6;
+  margin-bottom: 15px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+/* 受影响功能列表 */
+.affected-features {
+  margin: 15px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.affected-features li {
+  display: flex;
+  align-items: flex-start;
+  padding: 8px 12px;
+  margin-bottom: 6px;
+  background: var(--feature-bg);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.affected-features li::before {
+  content: '•';
+  color: var(--status-color);
+  font-weight: bold;
+  display: inline-block;
+  width: 1em;
+  margin-right: 8px;
+}
+
+.site-status-input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.site-status-panel input {
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-size: 14px;
+  background: var(--input-bg);
+  transition: all 0.2s ease;
+}
+
+.site-status-panel input:focus {
+  border-color: var(--status-color);
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-color), transparent 80%);
+}
+
+.status-actions {
+  margin-top: 15px;
+  text-align: right;
+  position: relative;
+}
+
+.status-btn {
+  padding: 8px 16px;
+  background: var(--status-color);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.3s ease;
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+  overflow: hidden;
+}
+
+.status-btn:hover {
+  background: color-mix(in srgb, var(--status-color), black 10%);
+  transform: translateY(-1px);
+}
+
+.status-btn:active {
+  transform: translateY(1px);
+}
+
+/* 发送动画效果 */
+.status-btn.sending {
+  background: var(--status-color);
+  color: transparent;
+}
+
+.status-btn.sending .btn-text {
+  opacity: 0;
+}
+
+.status-btn.sending::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 20px;
+  height: 20px;
+  margin: -10px 0 0 -10px;
+  border: 3px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 成功反馈效果 */
+.feedback-success {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--success-color);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  font-weight: 500;
+  opacity: 0;
+  transform: scale(0.9);
+  transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.feedback-success.visible {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* 关闭按钮 */
+.status-close-full {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: #fff;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity var(--transition-speed) ease;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+}
+
+.site-status-icon.expanded .status-close-full {
+  opacity: 1;
+}
+
+.site-status-icon:not(.expanded) .status-close-full {
+  display: none;
+}
+
+/* 移动端适配 */
+@media (max-width: 768px) {
+  .site-status-icon {
+    top: 20px;
+    left: 0;
+    max-width: 90vw;
+    border-radius: 0 12px 12px 0;
+    transform: translateX(0);
+  }
+
+  .status-label {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .site-status-panel {
+    max-width: 90vw;
+  }
+}

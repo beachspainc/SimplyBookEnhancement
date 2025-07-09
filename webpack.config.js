@@ -1,13 +1,13 @@
 const dns = require('dns');
-const {UserscriptPlugin} = require('webpack-userscript');
+const { UserscriptPlugin } = require('webpack-userscript');
 const path = require('path');
 const fs = require('fs');
-const {ProgressPlugin} = require('webpack');
+const { ProgressPlugin } = require('webpack');
 const metadata = require('./src/metadata');
 const os = require('os');
 const getPort = require('get-port');
 const webpack = require('webpack');
-const {Compilation, sources} = require('webpack');
+const { Compilation, sources } = require('webpack');
 
 // 设置 DNS 解析顺序
 dns.setDefaultResultOrder('verbatim');
@@ -22,111 +22,6 @@ const LogLevel = {
     FATAL: 'fatal',
     SILENCE: 'silence'
 };
-
-async function submitSquarespaceForm(formElements, config) {
-    // 获取CSRF Token
-    function getCSRFToken() {
-        const match = document.cookie.match(/crumb=([^;]+)/);
-        return match ? decodeURIComponent(match[1]) : null;
-    }
-
-    // 获取表单密钥
-    async function getFormKey(csrfToken) {
-        const response = await fetch('https://beachspainc.com/api/form/FormSubmissionKey', {
-            method: 'POST',
-            headers: {
-                'Accept': 'application/json, text/plain, */*',
-                'Content-Type': 'application/json',
-                'X-CSRF-Token': csrfToken
-            },
-            credentials: 'include'
-        });
-
-        if (!response.ok) {
-            throw new Error(`Key request failed: ${response.status}`);
-        }
-
-        return await response.json();
-    }
-
-    // 提交表单数据
-    async function submitFormData(csrfToken, formKey) {
-        const formPayload = {
-            formId: config.formId,
-            collectionId: config.collectionId,
-            form: JSON.stringify({
-                "name-yui_3_17_2_1_1679346524828_51496": [
-                    formElements.fname.value,
-                    formElements.lname.value
-                ],
-                "email-yui_3_17_2_1_1679348080814_63349": {
-                    emailAddress: formElements.email.value
-                },
-                "textarea-yui_3_17_2_1_1679348080814_63351": formElements.message.value
-            }),
-            key: formKey,
-            objectName: config.objectName,
-            isReactFormSubmission: true,
-            recaptchaEnterpriseV3Token: "",
-            pagePermissionTypeValue: 1,
-            pageTitle: config.pageTitle,
-            pageId: config.pageId,
-            contentSource: config.contentSource,
-            pagePath: config.pagePath
-        };
-
-        const response = await fetch('https://beachspainc.com/api/form/SaveFormSubmission', {
-            method: 'POST',
-            headers: {
-                'Accept': 'application/json, text/plain, */*',
-                'Content-Type': 'application/json',
-                'X-CSRF-Token': csrfToken
-            },
-            body: JSON.stringify(formPayload),
-            credentials: 'include'
-        });
-
-        return response;
-    }
-
-// 主提交流程
-    try {
-        const csrfToken = getCSRFToken();
-        if (!csrfToken) throw new Error('CSRF token not found');
-
-        const keyData = await getFormKey(csrfToken);
-        const response = await submitFormData(csrfToken, keyData.key);
-
-        if (response.status === 204) {
-            return {success: true};
-        } else {
-            const errorText = await response.text();
-            throw new Error(`Form submission failed: ${response.status}, ${errorText}`);
-        }
-    } catch (error) {
-        console.error('Form submission error:', error);
-        return {success: false, error: error.message};
-    }
-}
-
-const formElements = {
-    fname: "first",
-    lname: "last",
-    email: "test@asd.com",
-    message: "document.getElementById('message')"
-};
-
-const formConfig = {
-    formId: "67d3566edced410d83e33d1f",
-    collectionId: "67d3566ddced410d83e33cce",
-    objectName: "6c55ceb84973ea7f489a",
-    pageTitle: "Home",
-    pageId: "67d3566ddced410d83e33cce",
-    contentSource: "c",
-    pagePath: "/"
-};
-
-const result = await submitSquarespaceForm(formElements, formConfig);
 
 // 环境配置类
 class Config {
@@ -212,7 +107,7 @@ class Logger {
         if (!fs.existsSync('logs')) {
             fs.mkdirSync('logs');
         }
-        this.#logStream = fs.createWriteStream('logs/webpack.log', {flags: 'a'});
+        this.#logStream = fs.createWriteStream('logs/webpack.log', { flags: 'a' });
     }
 
     // 创建日志记录器实例
@@ -366,7 +261,7 @@ class EnsureDistDirPlugin {
 // Webpack配置类
 class WebpackConfig {
     static get mode() {
-        return Config.IsProduction ? 'production' : 'development';
+        return Config.IsProduction ?  'production' : 'development';
     }
 
     static get entry() {
@@ -441,9 +336,13 @@ class WebpackConfig {
             allowedHosts: 'all',
 
             static: {
-                directory: path.join(__dirname, 'dist'),
+                directory: path.join(__dirname, 'public'),
                 publicPath: '/',
-                watch: true
+                watch: true,
+                serveIndex: false
+            },
+            historyApiFallback: {
+                index: '/index.html'
             },
 
             headers: {
@@ -453,7 +352,7 @@ class WebpackConfig {
 
             client: {
                 logging: Config.LogLevel,
-                overlay: {errors: true, warnings: true},
+                overlay: { errors: true, warnings: true },
 
                 // 关键修复：强制指定 WebSocket URL
                 webSocketURL: {
@@ -510,7 +409,7 @@ class WebpackConfig {
                     console.warn('WebSocket server implementation not found');
                 }
             },
-            devMiddleware: {writeToDisk: true},
+            devMiddleware: { writeToDisk: true },
             hot: true, // 保持热更新开启
             setupMiddlewares(middlewares, devServer) {
                 // 添加 WebSocket 处理中间件

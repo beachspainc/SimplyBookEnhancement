@@ -1,0 +1,30 @@
+/* beachspa-map.css */
+
+/* 地图组件的整体布局样式 */
+gmpx-store-locator {
+    width: 100%;
+    height: 100%;
+
+    /* 当布局切换为竖排时：店铺列表占 30%，地图占 70% */
+    --gmpx-fixed-panel-height-column-layout: 30%;
+
+    /* Google 官方推荐样式参数 */
+    --gmpx-color-surface: #fff;
+    --gmpx-color-on-surface: #212121;
+    --gmpx-color-on-surface-variant: #757575;
+    --gmpx-color-primary: #1967d2;
+    --gmpx-color-outline: #e0e0e0;
+    --gmpx-font-family-base: "Roboto", sans-serif;
+    --gmpx-font-family-headings: "Roboto", sans-serif;
+    --gmpx-font-size-base: 0.875rem;
+    --gmpx-hours-color-open: #188038;
+    --gmpx-hours-color-closed: #d50000;
+    --gmpx-rating-color: #ffb300;
+    --gmpx-rating-color-empty: #e0e0e0;
+}
+
+/* 容器自动继承父级高度（即 Squarespace code block） */
+#beachspa-map-wrapper {
+    width: 100%;
+    /* 不设置高度，保持由 code block 决定 */
+}

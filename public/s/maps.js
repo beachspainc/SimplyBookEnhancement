@@ -1,6 +1,6 @@
 // beachspa-map.js — 完全封装版
-
-import { FileUtils } from './utilities.js';
+console.log("LOADING")
+import { FileUtils } from '/s/utilities.js';
 
 // 注入配套 CSS（/s/beachspa-map.css）
 FileUtils.inject_css(import.meta.url);

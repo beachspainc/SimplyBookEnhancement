@@ -1,8 +1,8 @@
 // site-status.js
-import { FileUtils, ReCaptcha, SquareSpace } from './utilities.js';
+console.log("LOADING")
+import { FileUtils, ReCaptcha, SquareSpace } from '/s/utilities.js';
 
 (function init_site_status() {
-    console.log(typeof import.meta);
     FileUtils.inject_css(import.meta.url);
 
     const status_map = {

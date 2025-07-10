@@ -72,8 +72,6 @@ export const FileUtils = {
      */
     async inject_css(url) {
         const { origin, dirname, filename } = this.resolve_url(url);
-        console.log(origin, dirname, filename);
-
         const content = await this.fetch_css(origin+dirname, filename);
 
         if (content !== null) {

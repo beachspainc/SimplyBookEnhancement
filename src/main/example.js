@@ -94,3 +94,125 @@ class SBClientArray extends SBEntityArray {
             .filter(p => p.phone);
     }
 }
+/**
+ * SimplyBook API utility wrapper.
+ */
+const SimplyBookAPI = {
+    baseUrl: 'https://beachspa.secure.simplybook.me/v2/rest',
+    token: window.Config?.options?.csrf_token,
+
+    /**
+     * Sends request to SimplyBook endpoint.
+     * @param {string} endpoint
+     * @param {Object} config
+     * @param {'GET'|'POST'} [config.method]
+     * @param {Object} [config.params]
+     * @param {Object|null} [config.data]
+     * @param {Object} [config.headers]
+     * @returns {Promise<SBEntityArray|SBEntity>}
+     */
+    async request(endpoint, { method = 'GET', params = {}, data = null, headers = {} } = {}) {
+        if (!this.token) {
+            console.error('❌ CSRF token missing');
+            return new SBEntityArray();
+        }
+
+        const query = method === 'GET' && params
+            ? '?' + new URLSearchParams(params).toString()
+            : '';
+
+        const url = `${this.baseUrl}/${endpoint}${query}`;
+
+        const finalHeaders = {
+            'x-csrf-token': this.token,
+            'x-requested-with': 'XMLHttpRequest',
+            'accept': 'application/json, text/plain, */*',
+            ...headers
+        };
+
+        try {
+            const response = await $.ajax({
+                url,
+                method,
+                headers: finalHeaders,
+                contentType: data ? 'application/json' : undefined,
+                data: data ? JSON.stringify(data) : undefined
+            });
+
+            const resData = response.data || [];
+            return Array.isArray(resData) ? new SBEntityArray(resData) : new SBEntity(resData);
+        } catch (err) {
+            console.error(`❌ Request failed (${endpoint}):`, err);
+            return new SBEntityArray();
+        }
+    },
+
+    /**
+     * Fetches paginated clients.
+     * @param {Object} params
+     * @param {number} [page=1]
+     * @returns {Promise<SBClientArray>}
+     */
+    async getClients(params = {}, page = 1) {
+        const res = await this.request('client/paginated', {
+            method: 'GET',
+            params: { page, on_page: 100, ...params }
+        });
+        return res.as(SBClientArray);
+    },
+
+    /**
+     * Fetches paginated bookings.
+     * @param {Object} params
+     * @param {number} [page=1]
+     * @returns {Promise<SBBookingArray>}
+     */
+    async getBookings(params = {}, page = 1) {
+        const res = await this.request('booking/paginated', {
+            method: 'GET',
+            params: { page, on_page: 100, ...params }
+        });
+        return res.as(SBBookingArray);
+    },
+
+    /**
+     * Recursively fetches all paginated results.
+     * @template T
+     * @param {function(Object, number): Promise<SBEntityArray>} fetchFn - Fetch function.
+     * @param {Object} params
+     * @param {number} [page=1]
+     * @param {Array<any>} [accumulated=[]]
+     * @returns {Promise<SBEntityArray<T>>}
+     */
+    async fetchAll(fetchFn, params = {}, page = 1, accumulated = []) {
+        const pageData = await fetchFn.call(this, params, page);
+        const raw = pageData.raw?.() || [];
+        const all = [...accumulated, ...raw];
+
+        return raw.length === 100
+            ? await this.fetchAll(fetchFn, params, page + 1, all)
+            : pageData.constructor ? new pageData.constructor(all) : new SBEntityArray(all);
+    }
+};
+
+// ✅ Testing fetchAll and extensions:
+(async () => {
+    const clients = await SimplyBookAPI.fetchAll(SimplyBookAPI.getClients, {
+        'filter[date_from]': '2025-07-01',
+        'filter[date_to]': '2025-07-09'
+    });
+    const phones = clients.getPhones();
+    const namePhone = clients.getNamePhonePairs();
+
+    console.log('📞 Total Valid Phones:', phones.length);
+    console.table(namePhone.slice(0, 5));
+
+    const bookings = await SimplyBookAPI.fetchAll(SimplyBookAPI.getBookings, {
+        'filter[date_from]': '2025-07-01',
+        'filter[date_to]': '2025-07-09'
+    });
+    const grouped = bookings.groupByTimeSegment();
+    console.table(grouped.morning.raw().slice(0, 5));
+    console.table(grouped.afternoon.raw().slice(0, 5));
+    console.table(grouped.evening.raw().slice(0, 5));
+})();

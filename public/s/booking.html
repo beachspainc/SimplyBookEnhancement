@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Booking Widget Solution</title>
+  <style>
+    #sb-sandbox {
+      width: 100%;
+      display: block;
+      border: none;
+      box-sizing: border-box;
+      height: auto;
+      min-height: 500px; /* 防止初始高度为0 */
+    }
+  </style>
+</head>
+<body>
+  <iframe
+    id="sb-sandbox"
+    sandbox="allow-scripts allow-forms allow-popups"
+    src="about:blank"
+    loading="lazy"
+  ></iframe>
+
+  <script>
+    // 确保DOM完全加载后再初始化
+    document.addEventListener('DOMContentLoaded', () => {
+      const iframe = document.getElementById('sb-sandbox');
+
+      // 创建iframe的文档结构
+      const doc = iframe.contentDocument;
+      doc.open();
+      doc.write(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <base target="_top">
+            <title>Booking Widget</title>
+            <style>body { margin: 0; padding: 0; }</style>
+            <script src="https://widget.simplybook.me/v2/widget/widget.js"></script>
+          </head>
+          <body>
+            <div id="widget-container"></div>
+            <script>
+              // 等待SimplybookWidget可用
+              function initWidget() {
+                if (typeof SimplybookWidget === 'undefined') {
+                  setTimeout(initWidget, 100);
+                  return;
+                }
+
+                // 初始化组件
+                new SimplybookWidget({
+                  widget_type:'iframe',
+                  url:'https://beachspa.simplybook.me',
+                  theme:'emeri',
+                  timeline:'modern',
+                  datepicker:'top_calendar',
+                  theme_settings:{
+                    sb_base_color:'#000000',
+                    logo_color:'#ffffff',
+                    body_bg_color:'#ffffff',
+                    dark_font_color:'#443936',
+                    light_font_color:'#ffffff',
+                    btn_color_1:'#000000',
+                    sb_company_label_color:'#896d65',
+                    timeline_hide_unavailable:'1',
+                    hide_past_days:'0',
+                    timeline_show_end_time:'0',
+                    timeline_modern_display:'as_slots',
+                    display_item_mode:'block',
+                    booking_nav_bg_color:'#ffffff',
+                    sb_busy:'#c7b3b3',
+                    sb_available:'#e2eaec',
+                    sb_review_image:'',
+                    hide_img_mode:'0',
+                    show_sidebar:'1'
+                  },
+                  app_config:{clear_session:1,allow_switch_to_ada:0,predefined:[]}
+                });
+
+                // 高度调整逻辑
+                const sendHeight = () => {
+                  const height = Math.ceil(document.documentElement.scrollHeight);
+                  window.parent.postMessage({ iframeHeight: height }, '*');
+                };
+
+                const ro = new ResizeObserver(sendHeight);
+                ro.observe(document.documentElement);
+                setTimeout(sendHeight, 500); // 初始发送
+              }
+
+              // 启动初始化
+              initWidget();
+            </script>
+          </body>
+        </html>
+      `);
+      doc.close();
+    });
+
+    // 父页面监听高度消息
+    window.addEventListener('message', (e) => {
+      if (e.data?.iframeHeight) {
+        const f = document.getElementById('sb-sandbox');
+        if (f) f.style.height = e.data.iframeHeight + 'px';
+      }
+    });
+  </script>
+</body>
+</html>

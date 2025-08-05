@@ -5,26 +5,11 @@ from typing import Any, List, Set, Optional, Union
 import pandas as pd
 import numpy as np
 
-
 class FieldRole(Enum):
     ROW = "row"
     COLUMN = "column"
 
 
-# --- Fields ---
-class Field:
-    def __init__(self, name: str, role: FieldRole = FieldRole.COLUMN):
-        self.name = name
-        self.role = role
-
-    def __repr__(self):
-        return f"<Field name={self.name}, role={self.role}>"
-
-    def ref(self) -> FieldRef:
-        return FieldRef(self.name)
-
-
-# --- Expressions ---
 class Expr:
     def __init__(self, *express: Union[str, 'Expr']):
         self.exprs: List['Expr'] = [self.resolve(e) for e in express]
@@ -33,7 +18,7 @@ class Expr:
 
     @staticmethod
     def resolve(e: Union[str, 'Expr']) -> 'Expr':
-        return FieldRef(e) if isinstance(e, str) else e
+        return Field.Ref(e) if isinstance(e, str) else e
 
     def eval(self, df: pd.DataFrame) -> pd.Series:
         raise NotImplementedError
@@ -45,22 +30,32 @@ class Expr:
         return f"{self.__class__.__name__}({', '.join(str(e) for e in self.exprs)})"
 
 
-class FieldRef(Expr):
-    def __init__(self, name: str):
-        super().__init__()
+
+class Field:
+    def __init__(self, name: str, role: FieldRole = FieldRole.COLUMN):
         self.name = name
+        self.role = role
 
-    def eval(self, df: pd.DataFrame) -> pd.Series:
-        return df[self.name]
+    def __repr__(self):
+        return f"<Field name={self.name}, role={self.role}>"
 
-    def dependencies(self) -> Set[str]:
-        return {self.name}
+    def ref(self) -> Ref:
+        return self.Ref(self.name)
 
-    def __str__(self):
-        return self.name
+    class Ref(Expr):
+        def __init__(self, name: str):
+            super().__init__()
+            self.name = name
 
+        def eval(self, df: pd.DataFrame) -> pd.Series:
+            return df[self.name]
 
-# --- Metrics ---
+        def dependencies(self) -> Set[str]:
+            return {self.name}
+
+        def __str__(self):
+            return self.name
+
 class Metric:
     def __init__(self, expr: Expr):
         self.expr = expr
@@ -270,6 +265,10 @@ class GoogleTrendAnalysis:
         return result_table
 
 
-df = pd.read_csv("VB vocation.csv", header=1)
-
-print(result_df)
+df = pd.read_csv("location_report.csv", header=1)
+# 设置显示所有行和列
+pd.set_option('display.max_rows', None)    # 显示所有行
+pd.set_option('display.max_columns', None) # 显示所有列
+pd.set_option('display.width', 0)          # 自动调整宽度
+pd.set_option('display.max_colwidth', None) # 显示完整列内容（防止被截断）
+print(df)

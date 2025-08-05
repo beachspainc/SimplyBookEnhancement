@@ -1,0 +1,24 @@
+# 忽略脚本本身和Git文件
+deploy.ps1
+.git
+.gitignore
+.gcloudignore
+
+# 忽略IDE和编辑器配置
+.idea/
+.vscode/
+
+# 忽略所有日志文件和临时文件
+*.log
+*.swp
+*.tmp
+
+# 忽略Node.js依赖
+node_modules/
+
+.bash_history
+.bash_logout
+.bashrc
+.lesshst
+.profile
+.ssh

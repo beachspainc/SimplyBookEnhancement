@@ -1,0 +1,262 @@
+<div id="custom-booking-container">
+    <h2>Our Services</h2>
+    <div id="loader" class="loader">Loading...</div>
+    <div id="categories-list"></div>
+</div>
+
+<style>
+    #custom-booking-container {
+        font-family: Arial, sans-serif;
+        max-width: 800px;
+        margin: 20px auto;
+        padding: 15px;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+    }
+    #custom-booking-container h2 {
+        text-align: center;
+        margin-bottom: 25px;
+    }
+    .loader {
+        text-align: center;
+        padding: 40px;
+        font-size: 1.2em;
+        color: #888;
+    }
+    .category-container {
+        margin-bottom: 25px;
+    }
+    .category-title {
+        font-size: 1.5em;
+        font-weight: bold;
+        color: #333;
+        padding-bottom: 10px;
+        border-bottom: 2px solid #eee;
+        margin-bottom: 15px;
+    }
+    .service-group {
+        border: 1px solid #e0e0e0;
+        border-radius: 5px;
+        margin-bottom: 10px;
+        overflow: hidden; /*
+     确保子元素的圆角生效 */
+    }
+    .service-group-header {
+        background-color: #f7f7f7;
+        padding: 15px;
+        cursor: pointer;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        transition: background-color 0.3s;
+    }
+    .service-group-header:hover {
+        background-color: #efefef;
+    }
+    .service-group-header h3 {
+        margin: 0;
+        font-size: 1.2em;
+    }
+    .service-group-summary {
+        font-size: 0.9em;
+        color: #666;
+        margin-top: 5px;
+    }
+    .service-group-header .arrow {
+        font-size: 1.5em;
+        font-weight: bold;
+        transition: transform 0.3s;
+    }
+    .service-group.open .service-group-header .arrow {
+        transform: rotate(90deg);
+    }
+    .service-items-panel {
+        max-height: 0;
+        overflow: hidden;
+        transition: max-height 0.4s ease-out;
+        background-color: #fff;
+    }
+    .service-item {
+        display: flex;
+        justify-content: space-between;
+        padding: 15px;
+        border-top: 1px solid #eee;
+        text-decoration: none;
+        color: #333;
+        transition: background-color 0.3s;
+    }
+    .service-item:hover {
+        background-color: #f0f8ff; /*
+     淡蓝色高亮 */
+    }
+    .service-item-name {
+        flex-grow: 1;
+    }
+    .service-item-price {
+        font-weight: bold;
+        margin-left: 20px;
+    }
+</style>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+
+        // ================== 在这里填入您的凭证 ==================
+        const companyLogin = "beachspa"; // 替换成您的 Company Login
+        const apiKey = "YOUR_API_KEY_HERE"; // 替换成您的 API Key
+        // ========================================================
+
+        const loader = document.getElementById('loader');
+        const categoriesList = document.getElementById('categories-list');
+        const bookingBaseUrl = `https://${companyLogin}.simplybook.me/booking/`;
+
+        // 1. 主要执行函数
+        async function fetchAndRenderServices() {
+            try {
+                // 通过 JSONP 调用 SimplyBook.me API (绕过CORS限制的常用方法)
+                const services = await jsonpRequest(`https://user-api.simplybook.me/services?company=${companyLogin}&key=${apiKey}`);
+                const categories = await jsonpRequest(`https://user-api.simplybook.me/categories?company=${companyLogin}&key=${apiKey}`);
+
+                // 数据处理和渲染
+                const servicesByCategory = groupServicesByCategory(services.data, categories.data);
+                renderAllCategories(servicesByCategory);
+
+            } catch (error) {
+                console.error("Failed to fetch data:", error);
+                categoriesList.innerHTML = `<p style="color:red; text-align:center;">Failed to load services. Please check credentials or try again later.</p>`;
+            } finally {
+                loader.style.display = 'none'; // 隐藏加载提示
+            }
+        }
+
+        // 2. 将服务按类别分类
+        function groupServicesByCategory(services, categories) {
+            const categoryMap = {};
+            // 初始化类别
+            categories.forEach(cat => {
+                categoryMap[cat.id] = {
+                    name: cat.name,
+                    services: []
+                };
+            });
+            // 将服务放入对应类别
+            services.forEach(service => {
+                if (categoryMap[service.category_id]) {
+                    categoryMap[service.category_id].services.push(service);
+                }
+            });
+            return categoryMap;
+        }
+
+        // 3. 渲染所有类别和服务
+        function renderAllCategories(servicesByCategory) {
+            for (const categoryId in servicesByCategory) {
+                const category = servicesByCategory[categoryId];
+                if (category.services.length === 0) continue; // 跳过没有服务的类别
+
+                const categoryContainer = document.createElement('div');
+                categoryContainer.className = 'category-container';
+                categoryContainer.innerHTML = `<h3 class="category-title">${category.name}</h3>`;
+
+                // 对服务进行分组
+                const groupedServices = groupSimilarServices(category.services);
+
+                // 渲染每个服务组
+                for (const groupName in groupedServices) {
+                    const group = groupedServices[groupName];
+                    const serviceGroupElement = document.createElement('div');
+                    serviceGroupElement.className = 'service-group';
+
+                    if (group.length === 1) {
+                        // 如果组内只有一个服务，则直接显示，不折叠
+                        const service = group[0];
+                        serviceGroupElement.innerHTML = `
+            <a href="${bookingBaseUrl}service/${service.id}" target="_blank" class="service-item" style="display:block; border-top:none;">
+              <div style="display:flex; justify-content:space-between;">
+                <span class="service-item-name">${service.name}</span>
+                <span class="service-item-price">$${parseInt(service.price)}</span>
+              </div>
+            </a>`;
+                    } else {
+                        // 如果组内有多个服务，创建可折叠的组
+                        const durations = group.map(s => `${s.duration/60}min`).join('/');
+                        const prices = group.map(s => `$${parseInt(s.price)}`).join('/');
+
+                        serviceGroupElement.innerHTML = `
+            <div class="service-group-header">
+              <div>
+                <h3>${groupName}</h3>
+                <div class="service-group-summary">${durations}</div>
+              </div>
+              <span class="arrow">&rsaquo;</span>
+            </div>
+            <div class="service-items-panel">
+              ${group.map(service => `
+                <a href="${bookingBaseUrl}service/${service.id}" target="_blank" class="service-item">
+                  <span class="service-item-name">${service.name}</span>
+                  <span class="service-item-price">$${parseInt(service.price)}</span>
+                </a>
+              `).join('')}
+            </div>`;
+
+                        // 添加点击折叠/展开事件
+                        const header = serviceGroupElement.querySelector('.service-group-header');
+                        header.addEventListener('click', function() {
+                            const groupEl = this.parentElement;
+                            groupEl.classList.toggle('open');
+                            const panel = this.nextElementSibling;
+                            if (panel.style.maxHeight) {
+                                panel.style.maxHeight = null;
+                            } else {
+                                panel.style.maxHeight = panel.scrollHeight + "px";
+                            }
+                        });
+                    }
+                    categoryContainer.appendChild(serviceGroupElement);
+                }
+                categoriesList.appendChild(categoryContainer);
+            }
+        }
+
+        // 4. 服务分组的核心逻辑
+        function groupSimilarServices(services) {
+            // 使用正则表达式匹配 "服务名称 时间" 格式
+            const serviceNameRegex = /^(.*?)\s*\d+\s*mins?$/i;
+
+            return services.reduce((acc, service) => {
+                let baseName = service.name.trim();
+                const match = service.name.trim().match(serviceNameRegex);
+
+                if (match && match[1]) {
+                    baseName = match[1].trim(); // "Full Body Massage 30 mins" -> "Full Body Massage"
+                }
+
+                if (!acc[baseName]) {
+                    acc[baseName] = [];
+                }
+                acc[baseName].push(service);
+                return acc;
+            }, {});
+        }
+
+        // 5. 辅助函数：发起 JSONP 请求
+        function jsonpRequest(url) {
+            return new Promise((resolve, reject) => {
+                const callbackName = 'jsonp_callback_' + Math.round(100000 * Math.random());
+                window[callbackName] = function(data) {
+                    delete window[callbackName];
+                    document.body.removeChild(script);
+                    resolve(data);
+                };
+
+                const script = document.createElement('script');
+                script.src = url + (url.indexOf('?') >= 0 ? '&' : '?') + 'callback=' + callbackName;
+                script.onerror = reject;
+                document.body.appendChild(script);
+            });
+        }
+
+        // 启动！
+        fetchAndRenderServices();
+    });
+</script>

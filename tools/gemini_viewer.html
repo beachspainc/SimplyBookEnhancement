@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Google Ad 高级分析平台</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif; }
+        .ad-item input:checked + label {
+            background-color: #eef2ff; /* indigo-50 */
+            border-color: #4f46e5; /* indigo-600 */
+        }
+        .dark .ad-item input:checked + label {
+            background-color: #3730a3; /* indigo-900 */
+            border-color: #a5b4fc; /* indigo-300 */
+        }
+        .custom-scrollbar::-webkit-scrollbar { width: 8px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #f1f5f9; }
+        .dark .custom-scrollbar::-webkit-scrollbar-track { background: #334155; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        #drop-zone { transition: background-color 0.2s ease-in-out, border-color 0.2s ease-in-out; }
+        #drop-zone.dragover { background-color: #e0e7ff; border-color: #4f46e5; }
+        .dark #drop-zone.dragover { background-color: #3730a3; border-color: #a5b4fc; }
+        .ad-preview-url { color: #056d00; font-size: 0.9rem; }
+        .dark .ad-preview-url { color: #6ee7b7; }
+        .ad-preview-headlines { color: #1d4ed8; font-weight: 500; font-size: 1.1rem; }
+        .dark .ad-preview-headlines { color: #93c5fd; }
+        .ad-preview-descriptions { color: #4b5563; font-size: 0.9rem; }
+        .dark .ad-preview-descriptions { color: #d1d5db; }
+    </style>
+</head>
+<body class="bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 p-4 sm:p-6 lg:p-8">
+
+<div class="max-w-7xl mx-auto">
+    <h1 class="text-2xl sm:text-3xl font-bold text-center mb-2">广告质量分 & 相关性 高级分析</h1>
+    <p class="text-center text-gray-600 dark:text-gray-400 mb-6">支持多选对比、排序和过滤功能</p>
+
+    <div class="flex justify-center mb-4">
+        <button id="ad-selector-button" class="px-5 py-2.5 bg-indigo-600 text-white rounded-lg shadow-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-75 transition-all disabled:bg-gray-400 dark:disabled:bg-gray-600 disabled:cursor-not-allowed" disabled>
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 inline-block mr-2" viewBox="0 0 20 20" fill="currentColor"><path d="M7 3a1 1 0 000 2h6a1 1 0 100-2H7zM4 7a1 1 0 011-1h10a1 1 0 110 2H5a1 1 0 01-1-1zM2 11a1 1 0 011-1h14a1 1 0 110 2H3a1 1 0 01-1-1z"/></svg>
+            选择广告进行对比
+        </button>
+    </div>
+
+    <div id="main-content" class="bg-white dark:bg-gray-800 p-4 rounded-xl shadow-lg relative" style="height: 65vh;">
+        <div id="drop-zone" class="absolute inset-0 border-4 border-dashed border-gray-300 dark:border-gray-600 rounded-xl flex items-center justify-center text-center p-5">
+            <div id="drop-zone-text" class="text-gray-500 dark:text-gray-400"><svg class="mx-auto h-12 w-12" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true"><path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></svg><h3 class="mt-2 text-sm font-medium">将文件拖拽到这里</h3><p class="mt-1 text-sm">支持 <code>.csv</code> 或 <code>.txt</code> 文件</p></div>
+        </div>
+        <canvas id="adsChart" class="hidden"></canvas>
+    </div>
+
+    <div id="ad-selector-modal-container" class="hidden">
+        <div id="modal-backdrop" class="fixed inset-0 bg-black bg-opacity-60 z-40"></div>
+        <div id="ad-selector-modal" class="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-11/12 max-w-3xl max-h-[90vh] flex flex-col">
+            <div class="p-4 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center"><h2 class="text-lg font-semibold">选择广告</h2><button id="close-modal-button" class="text-2xl font-light text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 transition">&times;</button></div>
+            <div class="p-4 border-b border-gray-200 dark:border-gray-700 grid grid-cols-1 md:grid-cols-3 gap-4">
+                <input type="text" id="ad-search" placeholder="搜索广告内容..." class="md:col-span-1 w-full px-3 py-2 border border-gray-300 rounded-md dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <select id="filter-by-campaign" class="w-full px-3 py-2 border border-gray-300 rounded-md dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"><option value="all">所有广告系列</option></select>
+                <select id="sort-by" class="w-full px-3 py-2 border border-gray-300 rounded-md dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    <option value="campaign">按广告系列排序 (A-Z)</option>
+                    <option value="adgroup">按广告组排序 (A-Z)</option>
+                    <option value="headline">按广告内容排序 (A-Z)</option>
+                    <option value="avgQs">按平均评分排序 (高-低)</option>
+                    <option value="lastDayQs">按最后一天评分排序 (高-低)</option>
+                    <option value="avgRelevance">按平均相关性排序 (高-低)</option>
+                    <option value="lastDayRelevance">按最后一天相关性排序 (高-低)</option>
+                </select>
+            </div>
+            <div id="ad-list" class="flex-grow overflow-y-auto p-4 custom-scrollbar space-y-2"></div>
+            <div class="p-4 border-t border-gray-200 dark:border-gray-700 flex justify-end">
+                <button id="update-chart-button" class="px-6 py-2 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-75">更新图表</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // --- 全局变量 ---
+    let chartViewer = null;
+    let adDataManager = null;
+    let adSelectorModal = null;
+
+    class AdDataManager {
+        constructor(parsedData) {
+            this.rawData = parsedData.filter(row => row.Campaign && row['Ad group'] && row.Day);
+            this.adRelevanceMap = new Map([['Below average', 1], ['Average', 2], ['Above average', 3]]);
+            this.adRelevanceReverseMap = new Map([[1, '低于平均'], [2, '平均水平'], [3, '高于平均']]);
+            this.adCreatives = new Map();
+            this.processRawData();
+        }
+        processRawData() {
+            const adContentStartCol = 'Final URL', adContentEndCol = 'Custom parameter';
+            this.rawData.forEach(row => {
+                const id = this.getAdIdentifier(row);
+                if (!this.adCreatives.has(id)) {
+                    const creative = { finalUrl: row['Final URL'] || '', headlines: [], descriptions: [] };
+                    let inAdContentSection = false;
+                    for (const key in row) {
+                        if (key === adContentStartCol) inAdContentSection = true;
+                        if (inAdContentSection) {
+                            const value = row[key];
+                            if (value && value.trim() !== '--') {
+                                if (key.startsWith('Headline')) creative.headlines.push(value);
+                                else if (key.startsWith('Description')) creative.descriptions.push(value);
+                            }
+                        }
+                        if (key === adContentEndCol) inAdContentSection = false;
+                    }
+                    this.adCreatives.set(id, { creative: creative, campaign: row.Campaign, adGroup: row['Ad group'], performance: {} });
+                }
+            });
+
+            for (const id of this.adCreatives.keys()) {
+                const allDaysData = this.rawData.filter(row => this.getAdIdentifier(row) === id);
+                if (allDaysData.length === 0) continue;
+
+                const sortedDaysData = allDaysData.sort((a, b) => new Date(b.Day) - new Date(a.Day));
+                const lastDay = sortedDaysData[0];
+
+                const validQsScores = sortedDaysData.map(d => parseFloat(d['Quality Score'])).filter(qs => !isNaN(qs));
+                const validRelevanceScores = sortedDaysData.map(d => this.adRelevanceMap.get(d['Ad relevance'])).filter(r => r != null);
+
+                const adInfo = this.adCreatives.get(id);
+                adInfo.performance = {
+                    lastDayQs: parseFloat(lastDay['Quality Score']) || 0,
+                    lastDayRelevance: this.adRelevanceMap.get(lastDay['Ad relevance']) || 0,
+                    avgQs: validQsScores.length > 0 ? validQsScores.reduce((a, b) => a + b, 0) / validQsScores.length : 0,
+                    avgRelevance: validRelevanceScores.length > 0 ? validRelevanceScores.reduce((a, b) => a + b, 0) / validRelevanceScores.length : 0
+                };
+                this.adCreatives.set(id, adInfo);
+            }
+        }
+        getAdIdentifier(row) {
+            const h1 = row['Headline 1'] || '', d1 = row['Description 1'] || '', type = row['Ad type'] || '';
+            return `${row.Campaign} > ${row['Ad group']} > ${type} > ${h1} > ${d1}`;
+        }
+        getUniqueAds() { return Array.from(this.adCreatives.keys()); }
+        getUniqueCampaigns() { return [...new Set(Array.from(this.adCreatives.values()).map(ad => ad.campaign))].sort(); }
+        getDataForAd(adIdentifier) {
+            const adData = this.rawData.filter(row => this.getAdIdentifier(row) === adIdentifier).sort((a, b) => new Date(a.Day) - new Date(b.Day));
+            return adData.map(row => ({
+                date: row.Day,
+                qs: parseFloat(row['Quality Score']) || null, // Use null for invalid numbers
+                relevance: this.adRelevanceMap.get(row['Ad relevance']) ?? null // Use null for unidentified strings
+            }));
+        }
+    }
+
+    class ChartViewer {
+        constructor(canvasId) {
+            this.canvas = document.getElementById(canvasId);
+            this.ctx = this.canvas.getContext('2d');
+            this.chart = null;
+            this.colors = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#64748b', '#22d3ee', '#facc15'];
+        }
+        initialize(dataManager) {
+            this.dataManager = dataManager; this.canvas.classList.remove('hidden');
+            if (this.chart) this.chart.destroy();
+            this.chart = new Chart(this.ctx, {
+                type: 'line', data: { labels: [], datasets: [] },
+                options: {
+                    responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false, axis: 'x' },
+                    plugins: {
+                        legend: { display: true, position: 'top' }, title: { display: true, text: '请选择广告进行对比', font: { size: 16 } },
+                        tooltip: {
+                            callbacks: {
+                                label: (context) => {
+                                    let label = context.dataset.label || '';
+                                    if (!label.includes('Relevance') && !label.includes('QS')) return null;
+                                    label = label.split(' - ')[0];
+                                    const scoreType = context.dataset.label.includes('QS') ? 'QS' : 'Relevance';
+                                    let value = context.parsed.y;
+                                    if (value === null) return `${label} (${scoreType}): 无数据`;
+                                    if (scoreType === 'Relevance') value = this.dataManager.adRelevanceReverseMap.get(value) || 'N/A';
+                                    return `${label} (${scoreType}): ${value}`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: { type: 'time', time: { unit: 'day' }, title: { display: true, text: '日期' } },
+                        y_qs: { type: 'linear', position: 'left', min: 1, max: 10, title: { display: true, text: '质量得分 (1-10)' }, grid: { color: '#e2e8f0' }, ticks: { stepSize: 1 } },
+                        y_relevance: {
+                            type: 'linear', position: 'right', min: 0, max: 3.5, // FIX: Set min to 0
+                            title: { display: true, text: '广告相关性' },
+                            grid: { drawOnChartArea: false },
+                            ticks: { stepSize: 1, callback: (value) => value === 0 ? '' : (this.dataManager.adRelevanceReverseMap.get(value) || '') }
+                        }
+                    }
+                }
+            });
+        }
+        updateChartForAds(adIdentifiers) {
+            if (!this.chart) return;
+            const allDates = new Set();
+            const adsData = adIdentifiers.map(id => this.dataManager.getDataForAd(id));
+            adsData.flat().forEach(d => allDates.add(d.date));
+            const masterDateLabels = Array.from(allDates).sort((a, b) => new Date(a) - new Date(b));
+            this.chart.data.labels = masterDateLabels;
+            this.chart.data.datasets = [];
+
+            adIdentifiers.forEach((id, index) => {
+                const adInfo = this.dataManager.adCreatives.get(id);
+                const adData = adsData[index];
+                const dataMap = new Map(adData.map(d => [d.date, d]));
+                const color = this.colors[index % this.colors.length];
+                const baseLabel = adInfo.creative.headlines[0] || `广告 ${index + 1}`;
+
+                this.chart.data.datasets.push({
+                    label: `${baseLabel} - QS`, data: masterDateLabels.map(date => dataMap.get(date)?.qs ?? null),
+                    borderColor: color, backgroundColor: color, yAxisID: 'y_qs', tension: 0.1, borderWidth: 2.5, spanGaps: false
+                });
+                this.chart.data.datasets.push({
+                    label: `${baseLabel} - Relevance`, data: masterDateLabels.map(date => dataMap.get(date)?.relevance ?? null),
+                    borderColor: color, backgroundColor: color, yAxisID: 'y_relevance', borderDash: [5, 5], borderWidth: 2, spanGaps: false
+                });
+            });
+
+            this.chart.options.plugins.title.text = adIdentifiers.length > 0 ? '广告表现对比' : '请选择广告进行对比';
+            this.chart.update();
+        }
+    }
+
+    class AdSelectorModal {
+        constructor(containerId, dataManager, chartViewer) {
+            this.container = document.getElementById(containerId);
+            this.listEl = this.container.querySelector('#ad-list');
+            this.searchEl = this.container.querySelector('#ad-search');
+            this.campaignFilterEl = this.container.querySelector('#filter-by-campaign');
+            this.sortEl = this.container.querySelector('#sort-by');
+            this.dataManager = dataManager;
+            this.chartViewer = chartViewer;
+            this.init();
+        }
+        init() {
+            document.getElementById('ad-selector-button').addEventListener('click', () => this.toggle(true));
+            document.getElementById('close-modal-button').addEventListener('click', () => this.toggle(false));
+            document.getElementById('modal-backdrop').addEventListener('click', () => this.toggle(false));
+            document.getElementById('update-chart-button').addEventListener('click', () => {
+                const selectedIds = Array.from(this.listEl.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value);
+                this.chartViewer.updateChartForAds(selectedIds);
+                this.toggle(false);
+            });
+            this.populateFilters();
+            [this.searchEl, this.campaignFilterEl, this.sortEl].forEach(el => el.addEventListener('input', () => this.applyFiltersAndSort()));
+            this.applyFiltersAndSort();
+        }
+        populateFilters() {
+            const campaigns = this.dataManager.getUniqueCampaigns();
+            campaigns.forEach(campaign => {
+                const option = document.createElement('option');
+                option.value = campaign; option.textContent = campaign;
+                this.campaignFilterEl.appendChild(option);
+            });
+        }
+        applyFiltersAndSort() {
+            const searchTerm = this.searchEl.value.toLowerCase();
+            const selectedCampaign = this.campaignFilterEl.value;
+            const sortBy = this.sortEl.value;
+            let adIds = this.dataManager.getUniqueAds();
+
+            if (selectedCampaign !== 'all') {
+                adIds = adIds.filter(id => this.dataManager.adCreatives.get(id).campaign === selectedCampaign);
+            }
+            if (searchTerm) {
+                adIds = adIds.filter(id => {
+                    const adInfo = this.dataManager.adCreatives.get(id);
+                    const searchableContent = `${adInfo.creative.finalUrl} ${adInfo.creative.headlines.join(' ')} ${adInfo.creative.descriptions.join(' ')} ${adInfo.campaign} ${adInfo.adGroup}`;
+                    return searchableContent.toLowerCase().includes(searchTerm);
+                });
+            }
+
+            adIds.sort((a, b) => {
+                const adA = this.dataManager.adCreatives.get(a);
+                const adB = this.dataManager.adCreatives.get(b);
+                switch (sortBy) {
+                    case 'campaign': return adA.campaign.localeCompare(adB.campaign);
+                    case 'adgroup': return adA.adGroup.localeCompare(adB.adGroup);
+                    case 'headline': return (adA.creative.headlines[0] || '').localeCompare(adB.creative.headlines[0] || '');
+                    case 'avgQs': return adB.performance.avgQs - adA.performance.avgQs;
+                    case 'lastDayQs': return adB.performance.lastDayQs - adA.performance.lastDayQs;
+                    case 'avgRelevance': return adB.performance.avgRelevance - adA.performance.avgRelevance;
+                    case 'lastDayRelevance': return adB.performance.lastDayRelevance - adA.performance.lastDayRelevance;
+                    default: return 0;
+                }
+            });
+            this.populateList(adIds);
+        }
+        populateList(adIds) {
+            const currentlySelected = Array.from(this.listEl.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value);
+            let html = '';
+            adIds.forEach((adId) => {
+                const adInfo = this.dataManager.adCreatives.get(adId);
+                if (!adInfo) return;
+                const { creative, campaign, adGroup } = adInfo;
+                const headlinesText = creative.headlines.join(' | ');
+                const descriptionsText = creative.descriptions.join(' ');
+                const isChecked = currentlySelected.includes(adId);
+                html += `
+                <div class="ad-item">
+                    <input type="checkbox" id="${adId}" value="${adId}" class="hidden" ${isChecked ? 'checked' : ''}>
+                    <label for="${adId}" class="block p-4 space-y-1 rounded-lg border-2 border-transparent cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors">
+                        <div class="ad-preview-url truncate">${creative.finalUrl}</div>
+                        <div class="ad-preview-headlines">${headlinesText}</div>
+                        <div class="ad-preview-descriptions">${descriptionsText}</div>
+                        <div class="text-sm text-gray-500 dark:text-gray-400 pt-1">${campaign} &gt; ${adGroup}</div>
+                    </label>
+                </div>`;
+            });
+            this.listEl.innerHTML = html;
+        }
+        toggle(show) { this.container.classList.toggle('hidden', !show); }
+    }
+
+    function processCsvData(csvText) {
+        const dropZoneEl = document.getElementById('drop-zone'), adSelectorButton = document.getElementById('ad-selector-button'), dropZoneText = document.getElementById('drop-zone-text');
+        dropZoneText.innerHTML = '<p>正在处理...</p>';
+        const lines = csvText.split('\n');
+        const cleanCsvText = lines.slice(2).join('\n');
+        Papa.parse(cleanCsvText, {
+            header: true, delimiter: "\t", skipEmptyLines: true,
+            complete: (results) => {
+                if (results.errors.length > 0) { dropZoneText.innerHTML = `<p class="text-red-500 font-bold">CSV解析失败: ${results.errors[0].message}</p>`; return; }
+                adDataManager = new AdDataManager(results.data);
+                if (adDataManager.getUniqueAds().length === 0) { dropZoneText.innerHTML = '<p class="text-red-500 font-bold">文件中未找到有效广告数据。</p>'; return; }
+                dropZoneEl.classList.add('hidden');
+                chartViewer = new ChartViewer('adsChart');
+                chartViewer.initialize(adDataManager);
+                adSelectorModal = new AdSelectorModal('ad-selector-modal-container', adDataManager, chartViewer);
+                adSelectorButton.disabled = false;
+            },
+            error: (err) => { dropZoneText.innerHTML = `<p class="text-red-500 font-bold">文件读取错误: ${err.message}</p>`; }
+        });
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const dropZoneEl = document.getElementById('drop-zone'), dropZoneText = document.getElementById('drop-zone-text'), defaultDropText = dropZoneText.innerHTML;
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(ev => dropZoneEl.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); }));
+        dropZoneEl.addEventListener('dragover', () => dropZoneEl.classList.add('dragover'));
+        dropZoneEl.addEventListener('dragleave', () => dropZoneEl.classList.remove('dragover'));
+        dropZoneEl.addEventListener('drop', (e) => {
+            dropZoneEl.classList.remove('dragover');
+            const file = e.dataTransfer.files[0];
+            if (!file || (!file.name.endsWith('.csv') && !file.name.endsWith('.txt'))) {
+                dropZoneText.innerHTML = '<p class="text-red-500 font-bold">文件格式错误，请拖入 .csv 文件</p>';
+                setTimeout(() => { dropZoneText.innerHTML = defaultDropText; }, 3000);
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = (event) => processCsvData(event.target.result);
+            reader.readAsText(file);
+        });
+    });
+</script>
+
+</body>
+</html>
